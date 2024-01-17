@@ -7,3 +7,10 @@
 #include "camera.h"
 #include "lidar.h"
 #include "client_messaging.h"
+
+#ifndef CLIENT_H
+#define CLIENT_H
+
+#define PAIR_PIN                17
+
+#endif
