@@ -3,6 +3,16 @@
 #include "serializer.h"
 #include "lcm_types.h"
 
+uint8_t _checksum(uint8_t* addends, int len);
+
+uint8_t _checksum(uint8_t* addends, int len) {
+    int sum = 0;
+    for (int i = 0; i < len; i++) {
+        sum += addends[i];
+    }
+    return 255 - ((sum) % 256);
+}
+
 void pose2D_t_deserialize(uint8_t* src, serial_pose2D_t* dest) {
     memcpy(dest, src, sizeof(serial_pose2D_t));
 }
@@ -127,6 +137,24 @@ void encode_rospkt(uint8_t* data, uint16_t len, uint16_t topic, uint8_t* pkt) {
 }
 
 int decode_rospkt(uint8_t* pkt, uint8_t* data, uint16_t* len, uint16_t* topic) {
+    // TODO: Implement
+    return 0;
+}
+
+void encode_botpkt(packets_wrapper_t* data, uint8_t* mac, uint8_t* pkt) {
+    // TODO: Implement
+}
+
+int decode_botpkt(uint8_t* pkt, packets_wrapper_t* data, uint8_t* mac) {
+    // TODO: Implement
+    return 0;
+}
+
+void encode_cmdpkt(uint8_t* rospkt, uint16_t len, uint8_t* mac, uint8_t* cmdpkt) {
+    // TODO: Implement
+}
+
+int decode_cmdpkt(uint8_t* cmdpkt, uint8_t* rospkt, uint16_t* len, uint8_t* mac) {
     // TODO: Implement
     return 0;
 }
