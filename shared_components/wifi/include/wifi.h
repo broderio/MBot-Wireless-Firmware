@@ -17,8 +17,8 @@
 
 typedef struct wifi_packet_t {
     uint8_t mac[MAC_ADDR_LEN];     
-    uint8_t len;                            
-    uint8_t data[WIFI_DATA_MAX_LEN];
+    uint16_t len;                            
+    uint8_t* data;
 } wifi_packet_t;
 
 void wifi_init(void);
