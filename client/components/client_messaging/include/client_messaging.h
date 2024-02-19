@@ -1,5 +1,5 @@
 #include "spi_follower.h"
-#include "wifi.h"
+#include "espnow.h"
 #include "serializer.h"
 
 #ifndef CLIENT_MESSAGING_H

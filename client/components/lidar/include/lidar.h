@@ -47,7 +47,7 @@
 #define LIDAR_BAUDRATE              115200
 #define LIDAR_MAX_MOTOR_PWM         (1 << 10)
 #define LIDAR_DEFAULT_MOTOR_PWM     600
-#define LIDAR_MAX_BUF_MEAS          500
+#define LIDAR_MAX_BUF_MEAS          256
 
 typedef enum {
     SCAN_TYPE_NORMAL,
@@ -60,10 +60,18 @@ typedef enum {
     ERROR
 } HEALTH_STATUS;
 
+typedef enum {
+    STANDARD,
+    QUARTER,
+    HALF,
+    DOUBLE
+} POINT_DENSITY;
+
 typedef struct {
     bool motor_running;
     bool scanning;
     int descriptor_size;
+    POINT_DENSITY density;
 } lidar_t;
 
 typedef struct {
@@ -112,23 +120,31 @@ typedef struct
     cabin_t cabins[16];
 } express_scan_raw_t;
 
-void lidar_init(lidar_t *lidar);
+int lidar_init(lidar_t *lidar);
+int lidar_deinit(lidar_t *lidar);
+
 void lidar_connect();
 void lidar_disconnect();
-void lidar_start_motor(lidar_t *lidar);
+
+void lidar_set_point_density(lidar_t *lidar, POINT_DENSITY density);
+
+void lidar_start_motor(lidar_t *lidar, int duty_cycle);
 void lidar_stop_motor(lidar_t *lidar);
+
 int lidar_get_info(lidar_info_t *info);
 int lidar_get_health(lidar_health_t *health);
+int lidar_reset(lidar_t *lidar);
+
 int lidar_clear_input(lidar_t *lidar);
+
 int lidar_start_scan(lidar_t *lidar);
 int lidar_start_exp_scan(lidar_t *lidar);
 int lidar_stop_scan(lidar_t *lidar);
-int lidar_reset(lidar_t *lidar);
-int lidar_get_scan(lidar_t *lidar, scan_t *scan);
-int lidar_get_exp_scan(lidar_t *lidar, express_scan_t *scan, int num_scans);
+
 int lidar_print_scan(scan_t *scan);
 int lidar_print_exp_scan(express_scan_t *scan);
+
 int lidar_get_scan_360(lidar_t *lidar, uint32_t distances[360]);
-int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t distances[360]);
+int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t* distances);
 
 #endif

@@ -32,30 +32,19 @@ void app_main(void)
     };
 
     ESP_ERROR_CHECK(tusb_cdc_acm_init(&acm_cfg));
-                    
-    int error;
+
     lidar_t lidar;
-    lidar_init(&lidar);
-
-    lidar_info_t info;
-    error = lidar_get_info(&info);
-    if (error != 0)
-    {
-        return;
-    }
-
-    lidar_health_t health;
-    error = lidar_get_health(&health);
+    int error = lidar_init(&lidar);
     if (error != 0)
     {
         return;
     }
 
     uint16_t scan[361] = {0};
+    scan[0] = 0xFFFF;
     lidar_start_exp_scan(&lidar);
     while (true)
     {
-        scan[0] = 0xFFFF;
         lidar_get_exp_scan_360(&lidar, scan + 1);
         tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (uint8_t*)scan, sizeof(scan));
         tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);

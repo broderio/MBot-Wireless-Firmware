@@ -40,3 +40,9 @@ int uart_read(int port, char *data, int len, int timeout_ms) {
 void uart_read_char(int port, char *data) {
     // TODO: Implement
 }
+
+int uart_in_waiting(int port) {
+    int len;
+    uart_get_buffered_data_len(port, (size_t*)&len);
+    return len;
+}

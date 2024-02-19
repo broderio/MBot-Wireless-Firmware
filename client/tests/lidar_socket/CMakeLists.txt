@@ -7,4 +7,4 @@ cmake_minimum_required(VERSION 3.16)
 set(EXTRA_COMPONENT_DIRS "../../components/" "../../../shared_components/")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(lidar_vis_test)
+project(network_test)

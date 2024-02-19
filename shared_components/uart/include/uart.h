@@ -11,5 +11,6 @@ void uart_write_char(int port, const char data);
 void uart_write_string(int port, const char *data);
 int uart_read(int port, char *data, int len, int timeout_ms);
 void uart_read_char(int port, char *data);
+int uart_in_waiting(int port);
 
 #endif

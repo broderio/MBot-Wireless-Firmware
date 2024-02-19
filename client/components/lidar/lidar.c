@@ -140,14 +140,15 @@ int _read_descriptor(lidar_descriptor_t *descriptor)
 
 int _read_response(uint8_t *data, int dsize)
 {
-    return uart_read(0, (char*)data, dsize, portMAX_DELAY);;
+    return uart_read(0, (char*)data, dsize, 5000);
 }
 
 /* Public functions */
 
-void lidar_init(lidar_t *lidar)
+int lidar_init(lidar_t *lidar)
 {
     lidar->motor_running = false;
+    lidar->density = STANDARD;
 
     ledc_timer_config_t ledc_timer = {
         .speed_mode       = LEDC_LOW_SPEED_MODE,
@@ -170,8 +171,41 @@ void lidar_init(lidar_t *lidar)
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 
     lidar_connect(lidar);
-    lidar_start_motor(lidar);
+    lidar_start_motor(lidar, LIDAR_DEFAULT_MOTOR_PWM);
     lidar->scanning = false;
+
+    int error = 0;
+    lidar_health_t health;
+    error = lidar_get_health(&health);
+    if (error != 0)
+    {
+        lidar_reset(lidar);
+        error = lidar_get_health(&health);
+        if (error != 0)
+        {
+            return -1;
+        }
+    }
+
+    lidar_info_t info;
+    error = lidar_get_info(&info);
+    if (error != 0)
+    {
+        return -1;
+    }
+    return 0;
+}
+
+int lidar_deinit(lidar_t *lidar)
+{
+    if (lidar->scanning)
+    {
+        lidar_stop_scan(lidar);
+    }
+    lidar_reset(lidar);
+    lidar_stop_motor(lidar);
+    lidar_disconnect(lidar);
+    return 0;
 }
 
 void lidar_connect()
@@ -184,13 +218,18 @@ void lidar_disconnect()
     uart_deinit(0);
 }
 
-void lidar_start_motor(lidar_t *lidar)
+void lidar_set_point_density(lidar_t *lidar, POINT_DENSITY density)
+{
+    lidar->density = density;
+}
+
+void lidar_start_motor(lidar_t *lidar, int duty_cycle)
 {
     if (lidar->motor_running)
     {
         return;
     }
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, LIDAR_DEFAULT_MOTOR_PWM);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_cycle);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
     lidar->motor_running = true;
 }
@@ -262,10 +301,6 @@ int lidar_get_health(lidar_health_t *health)
 
 int lidar_clear_input(lidar_t *lidar)
 {
-    if (lidar->scanning)
-    {
-        return -1;
-    }
     uart_flush(0);
     return 0;
 }
@@ -320,14 +355,17 @@ int lidar_start_exp_scan(lidar_t *lidar)
     _read_descriptor(&descriptor);
     if (descriptor.dsize != LIDAR_EXP_SCAN_RESP_LEN)
     {
+        printf("Descriptor size: %d\n", descriptor.dsize);
         return -1;
     }
     if (descriptor.is_single)
     {
+        printf("Not single\n");
         return -1;
     }
     if (descriptor.dtype != LIDAR_EXP_SCAN_DTYPE)
     {
+        printf("Descriptor type: %d\n", descriptor.dtype);
         return -1;
     }
     lidar->scanning = true;
@@ -347,63 +385,14 @@ int lidar_stop_scan(lidar_t *lidar)
 int lidar_reset(lidar_t *lidar)
 {
     _send_cmd(LIDAR_RESET);
-    vTaskDelay(1 / portTICK_PERIOD_MS);
+    vTaskDelay(2 / portTICK_PERIOD_MS);
     int ret = lidar_clear_input(lidar);
     return ret;
 }
 
-int lidar_get_exp_scan(lidar_t *lidar, express_scan_t *scan, int num_scans)
-{
-    if (!lidar->scanning || !lidar->motor_running)
-    {
-        return -1;
-    }
-
-    int dsize = lidar->descriptor_size;
-    uint8_t* raw = malloc(dsize);
-    express_scan_raw_t scan_raw_1, scan_raw_2;
-
-    // Get first scan
-    _read_response(raw, dsize);
-    _get_raw_scan_express(&scan_raw_1, raw);
-
-    for (int i =0; i < num_scans; ++i)
-    {
-        _read_response(raw, dsize);
-        _get_raw_scan_express(&scan_raw_2, raw);
-        _process_scan_express(&scan[i], &scan_raw_1, &scan_raw_2);
-        scan_raw_1 = scan_raw_2;
-    }
-    
-    // Process scan
-    free(raw);
-    return 0;
-}
-
-int lidar_get_scan(lidar_t *lidar, scan_t *scan)
-{
-    if (!lidar->scanning || !lidar->motor_running)
-    {
-        return -1;
-    }
-
-    int dsize = lidar->descriptor_size;
-    uint8_t* raw = malloc(dsize);
-    uint8_t new_scan = 0;
-
-    // Read scan
-    int bytes_read = 0;
-    while (bytes_read != dsize) {
-        bytes_read = _read_response(raw + bytes_read, dsize - bytes_read);
-    }
-    _process_scan(scan, raw, &new_scan);
-    free(raw);
-    return 0;
-}
-
 int lidar_print_scan(scan_t *scan)
 {
-    printf("Angle: %u, Distance: %lu, Quality: %u \n", scan->angle_q6, scan->distance_q2, scan->quality);
+    printf("Angle: %u, Distance: %lu, Quality: %u \n", scan->angle_q6 >> 6, scan->distance_q2 >> 2, scan->quality);
     return 0;
 }
 
@@ -416,7 +405,6 @@ int lidar_print_exp_scan(express_scan_t *scan)
     return 0;
 }
 
-// Updates distances (in millimeters) with a 0-360 degree scan. If a distance = 0, then it is invalid.
 int lidar_get_scan_360(lidar_t *lidar, uint32_t distances[360])
 {
     if (!lidar->scanning | !lidar->motor_running)
@@ -429,15 +417,13 @@ int lidar_get_scan_360(lidar_t *lidar, uint32_t distances[360])
     scan_t scan;
     uint8_t new_scan = 0;
 
-    // size_t buf_size;
-    // uart_get_buffered_data_len(0, &buf_size);;
-
     // Wait for new scan
     while (!new_scan)
     {
         if (_read_response(raw, dsize) != dsize) continue;
         _process_scan(&scan, raw, &new_scan);
     }
+
     // Set first distance
     uint16_t angle = scan.angle_q6 >> 6; // Only keep integer part
     distances[angle] = scan.distance_q2 >> 2; // Only keep integer part
@@ -460,11 +446,31 @@ int lidar_get_scan_360(lidar_t *lidar, uint32_t distances[360])
     return 0;
 }
 
-int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t distances[360])
+int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t* distances)
 {
     if (!lidar->scanning || !lidar->motor_running)
     {
         return -1;
+    }
+
+    size_t num_points = 360;
+    int shift_factor = 6;
+    switch (lidar->density)
+    {
+        case STANDARD:
+            break;
+        case QUARTER:
+            num_points = 360 / 4;
+            shift_factor = 8;
+            break;
+        case HALF:
+            num_points = 360 / 2;
+            shift_factor = 7;
+            break;
+        case DOUBLE:
+            num_points = 360 * 2;
+            shift_factor = 5;
+            break;
     }
 
     int dsize = lidar->descriptor_size;
@@ -472,37 +478,51 @@ int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t distances[360])
     express_scan_raw_t scan_raw_1, scan_raw_2;
     express_scan_t scan;
 
-    // Get first scan to ignore
-    _read_response(raw, dsize);
-
-    // Get real first scan
-    _read_response(raw, dsize);
+    // Get first scan
+    // printf("Reading first scan\n");
+    int ret = _read_response(raw, dsize);
+    if (ret < dsize)
+    {
+        printf("Error reading response, read %d bytes\n", ret);
+        return -1;
+    }
     _get_raw_scan_express(&scan_raw_1, raw);
 
     int scan_over = 0;
+    uint16_t raw_angle_prev = scan_raw_1.start_angle_q6;
     while (!scan_over)
     {
-        _read_response(raw, dsize);
+        // printf("Reading scan, buffer: %d\n", uart_in_waiting(0));
+        ret = _read_response(raw, dsize);
+        // printf("Read: %d, expected: %d\n", uart_in_waiting(0));
+        if (ret < dsize)
+        {
+            printf("Error reading response, read %d bytes\n", ret);
+            return -1;
+        }
         _get_raw_scan_express(&scan_raw_2, raw);
         _process_scan_express(&scan, &scan_raw_1, &scan_raw_2);
         scan_raw_1 = scan_raw_2;
-        lidar_print_exp_scan(&scan);
 
-        uint16_t angle_prev = 0;
+        if (scan_raw_1.start_angle_q6 < raw_angle_prev)
+        {
+            scan_over = 1;
+        }
+        raw_angle_prev = scan_raw_1.start_angle_q6;
+
+        uint16_t angle_prev = num_points;
         for (int j = 0; j < 32; j++)
         {
-            uint16_t angle = scan.angles[j] >> 6;
-            if (angle > 359) {
+            uint16_t angle = scan.angles[j] >> shift_factor;
+            uint16_t distance = scan.distances[j];
+            if (angle > num_points - 1) {
                 continue;
             }
-            if (angle < angle_prev) {
-                scan_over = 1;
-                break;
-            }
-            if (angle_prev == angle) {
+            if (angle_prev == angle || distance == 0) {
                 continue;
             }
-            distances[angle] = scan.distances[j];
+            distances[angle] = distance;
+            // printf("%u : %u \n", angle, distance);
             angle_prev = angle;
         }
     }
