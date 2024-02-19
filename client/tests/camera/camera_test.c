@@ -5,12 +5,8 @@
 #include <stdint.h>
 
 #include "camera.h"
-#include "lidar.h"
-#include "client_messaging.h"
-
-#include "client.h"
 
 void app_main(void)
 {
-    
+
 }
