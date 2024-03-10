@@ -37,6 +37,9 @@
 #define BUTTONS_LEFT_PIN        11                      /**< Controller button 4 (Left) pin on board (GPIO)*/
 #define BUTTONS_JS_PIN          12                      /**< Controller button 5 (Joystick) pin on board (GPIO)*/
 
+#define JOYSTICK_Y_PIN          4
+#define JOYSTICK_X_PIN          5
+
 #define PILOT_PIN               6
 
 #pragma pack(push, 1)
