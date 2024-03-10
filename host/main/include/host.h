@@ -21,10 +21,15 @@
 #include "esp_mac.h"
 #include "nvs_flash.h"
 
+#include "lwip/err.h"
+#include "lwip/sockets.h"
+#include "lwip/sys.h"
+#include "lwip/netdb.h"
+
 #include "buttons.h"
-#include "fram.h"
 #include "joystick.h"
 #include "sockets.h"
+#include "led.h"
 
 #define BUTTONS_UP_PIN          10                      /**< Controller button 1 (Up) pin on board (GPIO)*/
 #define BUTTONS_RIGHT_PIN       9                       /**< Controller Button 2 (Right) pin on board (GPIO)*/
@@ -32,12 +37,16 @@
 #define BUTTONS_LEFT_PIN        11                      /**< Controller button 4 (Left) pin on board (GPIO)*/
 #define BUTTONS_JS_PIN          12                      /**< Controller button 5 (Joystick) pin on board (GPIO)*/
 
-#define FRAM_SDA_PIN            3                       /**< I2C SDA pin on board (GPIO)*/
-#define FRAM_SCL_PIN            2                       /**< I2C SCL pin on board (GPIO)*/
-
 #define PILOT_PIN               6
-#define PAIR_PIN                17
-#define LED1_PIN                15                      /**< LED 1 pin on board (GPIO)*/
-#define LED2_PIN                16                      /**< LED 2 pin on board (GPIO)*/
+
+#pragma pack(push, 1)
+typedef struct packet_t {
+    uint8_t *data;
+    uint16_t len;
+} packet_t;
+#pragma pack(pop)
+
+void connection_task(void *args);
+void socket_task(void *args);
 
 #endif

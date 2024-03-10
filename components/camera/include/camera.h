@@ -20,8 +20,8 @@ typedef struct camera_pins_t {
     int pclk;
 } camera_pins_t;
 
-void camera_init(camera_pins_t *pins);
-void camera_deinit();
+esp_err_t camera_init(camera_pins_t *pins);
+esp_err_t camera_deinit();
 void camera_capture_frame(camera_fb_t** frame);
 void camera_return_frame(camera_fb_t* frame);
 

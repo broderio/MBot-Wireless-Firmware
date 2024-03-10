@@ -31,13 +31,8 @@ int max_conn_attempts = -1;
 int conn_attempts = 0;
 
 EventGroupHandle_t s_wifi_event_group;
-EventGroupHandle_t s_pair_event_group;
 
 esp_netif_t *sta_netif = NULL;
-
-static void client_pair_button_isr(void* arg) {
-    xEventGroupSetBits(s_pair_event_group, PAIR_PRESSED_BIT);
-}
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
@@ -75,13 +70,8 @@ void utils_init() {
     };
     gpio_config(&pair_config);
 
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(PAIR_PIN, client_pair_button_isr, NULL);
-
     s_wifi_event_group = xEventGroupCreate();
     assert(s_wifi_event_group);
-    s_pair_event_group = xEventGroupCreate();
-    assert(s_pair_event_group);
 }
 
 int find_paired_ssid(char* ssid)
@@ -167,7 +157,7 @@ void get_sta_config(wifi_config_t *wifi_config)
     wifi_scan_config_t scan_config = {
         .ssid = NULL,
         .bssid = NULL,
-        .channel = 0,
+        .channel = 11,
         .show_hidden = false,
         .scan_type = WIFI_SCAN_TYPE_PASSIVE,
         .scan_time.passive = 100,
@@ -232,18 +222,6 @@ void start_wifi_event_handler()
                                                         &wifi_event_handler,
                                                         NULL,
                                                         &instance_got_ip));
-}
-
-void wait_for_pair()
-{
-    ESP_LOGI("CLIENT", "Press the pair button to connect to MBotWireless AP");
-    EventBits_t pair_bits = xEventGroupWaitBits(s_pair_event_group,
-            PAIR_PRESSED_BIT,
-            pdFALSE,
-            pdFALSE,
-            portMAX_DELAY);
-    ESP_LOGI("CLIENT", "Pair button pressed!");
-    xEventGroupClearBits(s_pair_event_group, PAIR_PRESSED_BIT); 
 }
 
 int wait_for_connect(int attempts)

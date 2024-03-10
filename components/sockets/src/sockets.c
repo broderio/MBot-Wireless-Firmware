@@ -96,7 +96,7 @@ int socket_connection_recv(connection_socket_t connection, char *buffer, int buf
         if (errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK) {
             return 0;   // Not an error
         }
-        if (errno == ENOTCONN) {
+        else if (errno == ENOTCONN) {
             ESP_LOGW(SOCKET_TAG, "Connection closed");
             return -2;  // Socket has been disconnected
         }
@@ -195,11 +195,20 @@ int socket_client_send(client_socket_t client, const char *data, int data_len)
     int bytes_sent = 0;
     while (bytes_sent < data_len) {
         int bytes = send(client, data + bytes_sent, data_len - bytes_sent, 0);
-        if (bytes < 0) {
+         if (errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK) {
+            return 0;   // Not an error
+        }
+        else if (errno == ENOTCONN) {
+            ESP_LOGW(SOCKET_TAG, "Connection closed");
+            return -2;  // Socket has been disconnected
+        }
+        else if (bytes < 0) {
             ESP_LOGE(SOCKET_TAG, "Error occurred during sending: errno %d", errno);
             return -1;
         }
+        
         bytes_sent += bytes;
+        // ESP_LOGI(SOCKET_TAG, "Bytes sent: %d", bytes_sent);
     }
     return 0;
 }

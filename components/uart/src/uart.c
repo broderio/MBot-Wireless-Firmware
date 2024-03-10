@@ -4,7 +4,7 @@
 
 #include "uart.h"
 
-void uart_init(int port, int rx_pin, int tx_pin, int baud_rate, size_t buffer_size) {
+void uart_init(uart_t port, int rx_pin, int tx_pin, int baud_rate, size_t buffer_size) {
     uart_config_t uart_config = {
         .baud_rate = baud_rate,
         .data_bits = UART_DATA_8_BITS,
@@ -19,36 +19,36 @@ void uart_init(int port, int rx_pin, int tx_pin, int baud_rate, size_t buffer_si
     ESP_ERROR_CHECK(uart_set_pin(port, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 }
 
-void uart_deinit(int port) {
+void uart_deinit(uart_t port) {
     ESP_ERROR_CHECK(uart_driver_delete(port));
 }
 
-int uart_write(int port, const char *data, int len) {
+int uart_write(uart_t port, const char *data, int len) {
     return uart_write_bytes(port, data, len);
 }
 
-int uart_write_char(int port, const char data) {
+int uart_write_char(uart_t port, const char data) {
     return uart_write_bytes(port, &data, 1);
 }
 
-int uart_write_string(int port, const char *data) {
+int uart_write_string(uart_t port, const char *data) {
     return uart_write(port, data, strlen(data));
 }
 
-int uart_read(int port, char *data, int len, int timeout_ms) {
+int uart_read(uart_t port, char *data, int len, int timeout_ms) {
     return uart_read_bytes(port, data, len, timeout_ms / portTICK_PERIOD_MS);
 }
 
-void uart_read_char(int port, char *data) {
+void uart_read_char(uart_t port, char *data) {
     ESP_ERROR_CHECK(uart_read_bytes(port, data, 1, portMAX_DELAY));
 }
 
-int uart_in_waiting(int port) {
+int uart_in_waiting(uart_t port) {
     int len;
     ESP_ERROR_CHECK(uart_get_buffered_data_len(port, (size_t*)&len));
     return len;
 }
 
-void uart_flush_buffer(int port) {
+void uart_flush_buffer(uart_t port) {
     ESP_ERROR_CHECK(uart_flush(port));
 }

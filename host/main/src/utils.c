@@ -25,13 +25,12 @@
 
 #include "driver/gpio.h"
 
+#include "led.h"
+
 #include "utils.h"
 
 int num_connections_ap = 0;
 int num_connections_socket = 0;
-
-EventGroupHandle_t s_pair_event_group;
-EventGroupHandle_t s_blink_event_group;
 
 static esp_err_t set_dns_server(esp_netif_t *netif, uint32_t addr, esp_netif_dns_type_t type)
 {
@@ -51,78 +50,23 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
         num_connections_ap++;
         ESP_LOGI("HOST", "station "MACSTR" join, AID=%d", MAC2STR(event->mac), event->aid);
-        gpio_set_level(LED1_PIN, 0);
+        led_toggle(LED1_PIN);
         vTaskDelay(250 / portTICK_PERIOD_MS);
-        gpio_set_level(LED1_PIN, 1);
+        led_toggle(LED1_PIN);
     }
     else if (event_id == WIFI_EVENT_AP_STADISCONNECTED)
     {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
         num_connections_ap--;
         ESP_LOGI("HOST", "station "MACSTR" leave, AID=%d", MAC2STR(event->mac), event->aid);
-        gpio_set_level(LED1_PIN, 0);
+        led_toggle(LED1_PIN);
         vTaskDelay(250 / portTICK_PERIOD_MS);
-        gpio_set_level(LED1_PIN, 1);
+        led_toggle(LED1_PIN);
         vTaskDelay(250 / portTICK_PERIOD_MS);
-        gpio_set_level(LED1_PIN, 0);
+        led_toggle(LED1_PIN);
         vTaskDelay(250 / portTICK_PERIOD_MS);
-        gpio_set_level(LED1_PIN, 1);
+        led_toggle(LED1_PIN);
     }
-}
-
-typedef struct blink_arg_t {
-    int pin;
-    int delay;
-} blink_arg_t;
-
-void blink_task(void* arg) {
-    blink_arg_t* blink_arg = (blink_arg_t*) arg;
-    while (true) {
-        gpio_set_level(blink_arg->pin, 1);
-        vTaskDelay(blink_arg->delay / portTICK_PERIOD_MS);
-        gpio_set_level(blink_arg->pin, 0);
-        EventBits_t bits = xEventGroupGetBits(s_blink_event_group);
-        if (bits & STOP_BLINKING_BIT) {
-            free(blink_arg);
-            xEventGroupClearBits(s_blink_event_group, STOP_BLINKING_BIT);
-            xEventGroupSetBits(s_blink_event_group, BLINK_CONFIRM_BIT);
-            vTaskDelete(NULL);
-        }
-        vTaskDelay(blink_arg->delay / portTICK_PERIOD_MS);
-    }
-}
-
-static void host_pair_button_isr(void* arg) {
-    xEventGroupSetBits(s_pair_event_group, PAIR_PRESSED_BIT);
-}
-
-void utils_init()
-{
-    gpio_config_t led_config = {
-        .pin_bit_mask = (0b1 << LED1_PIN) | (0b1 << LED2_PIN),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_down_en = 0,
-        .pull_up_en = 0,
-    };
-    gpio_config(&led_config);
-    gpio_set_level(LED1_PIN, 0);
-
-    gpio_config_t pair_config = {
-        .pin_bit_mask = (0b1 << PAIR_PIN),
-        .mode = GPIO_MODE_INPUT,
-        .pull_down_en = 0,
-        .pull_up_en = 1,
-        .intr_type = GPIO_INTR_POSEDGE,
-    };
-    gpio_config(&pair_config);
-
-    s_pair_event_group = xEventGroupCreate();
-    assert(s_pair_event_group);
-    s_blink_event_group = xEventGroupCreate();
-    assert(s_blink_event_group);
-
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(PAIR_PIN, host_pair_button_isr, NULL);
 }
 
 void set_static_ip(esp_netif_t *netif, const char *static_ip, const char* static_netmask, const char* static_gw)
@@ -179,7 +123,7 @@ void init_ap(wifi_config_t *wifi_ap_config) {
 
     wifi_config_t wifi_config = {
         .ap = {
-            .channel = 1,
+            .channel = 11,
             .authmode = WIFI_AUTH_WPA2_PSK,
             .password = AP_PASSWORD,
             .max_connection = MAX_CONN,
@@ -200,17 +144,6 @@ void init_ap(wifi_config_t *wifi_ap_config) {
     set_static_ip(ap_netif, MBOT_IP_ADDR, MBOT_NETMASK_ADDR, MBOT_GW_ADDR);
     ESP_LOGI("HOST", "Restarting Wi-Fi");
     ESP_ERROR_CHECK(esp_wifi_start());
-}
-
-void wait_for_pair()
-{
-    EventBits_t pair_bits = xEventGroupWaitBits(s_pair_event_group,
-            PAIR_PRESSED_BIT,
-            pdFALSE,
-            pdFALSE,
-            portMAX_DELAY);
-    ESP_LOGI("CLIENT", "Pair button pressed!");
-    xEventGroupClearBits(s_pair_event_group, PAIR_PRESSED_BIT); 
 }
 
 void wait_for_no_hosts()
@@ -251,21 +184,4 @@ void wait_for_no_hosts()
     vTaskDelay(250 / portTICK_PERIOD_MS);
     ESP_LOGI("HOST", "Stopping scan.");
     ESP_ERROR_CHECK(esp_wifi_stop());
-}
-
-void start_blink(int pin, int delay_ms) {
-    blink_arg_t* blink_arg = malloc(sizeof(blink_arg_t));
-    blink_arg->pin = pin;
-    blink_arg->delay = delay_ms;
-    xTaskCreate(blink_task, "blink_task", 1024, blink_arg, 5, NULL);
-}
-
-void stop_blink() {
-    xEventGroupSetBits(s_blink_event_group, STOP_BLINKING_BIT);
-    xEventGroupWaitBits(s_blink_event_group,
-            BLINK_CONFIRM_BIT,
-            pdFALSE,
-            pdFALSE,
-            portMAX_DELAY);
-    xEventGroupClearBits(s_blink_event_group, BLINK_CONFIRM_BIT);
 }

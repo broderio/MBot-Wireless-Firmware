@@ -11,6 +11,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "esp_log.h"
+
 #include "uart.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -208,7 +210,7 @@ void _send_payload_cmd(uint8_t cmd, uint8_t *payload, int payload_len)
     req[3 + payload_len] = checksum;
     
     // Send the request buffer over UART
-    uart_write(0, (const char *)req, 4 + payload_len);
+    uart_write(UART_NUM_0, (const char *)req, 4 + payload_len);
 }
 
 /**
@@ -223,7 +225,7 @@ void _send_cmd(uint8_t cmd)
     uint8_t req[2];
     req[0] = LIDAR_SYNC;
     req[1] = cmd;
-    uart_write(0, (const char *)req, 2);
+    uart_write(UART_NUM_0, (const char *)req, 2);
 }
 
 /**
@@ -238,7 +240,7 @@ void _send_cmd(uint8_t cmd)
 int _read_descriptor(lidar_descriptor_t *descriptor)
 {
     uint8_t descriptor_bytes[LIDAR_DESCRIPTOR_LEN] = {0};
-    int bytes_read = uart_read_bytes(0, descriptor_bytes, LIDAR_DESCRIPTOR_LEN, portMAX_DELAY); // Replace uart_read with uart_read_bytes
+    int bytes_read = uart_read_bytes(UART_NUM_0, descriptor_bytes, LIDAR_DESCRIPTOR_LEN, portMAX_DELAY); // Replace uart_read with uart_read_bytes
     if (descriptor_bytes[0] != LIDAR_SYNC || descriptor_bytes[1] != LIDAR_SYNC_INV)
     {
         return -1;
@@ -260,7 +262,7 @@ int _read_descriptor(lidar_descriptor_t *descriptor)
  */
 int _read_response(uint8_t *data, int dsize)
 {
-    return uart_read(0, (char *)data, dsize, 5000);
+    return uart_read(UART_NUM_0, (char *)data, dsize, 5000);
 }
 
 /**
@@ -279,12 +281,12 @@ int lidar_init(lidar_t *lidar, int rx_pin, int tx_pin, int motor_pin)
     lidar->motor_running = false;
     lidar->density = STANDARD;
     lidar->scanning = false;
-    lidar->port_num = 0;
+    lidar->port_num = UART_NUM_0;
     lidar->rx_pin = rx_pin;
     lidar->tx_pin = tx_pin;
     lidar->motor_pin = motor_pin;
 
-    uart_init(lidar->port_num, lidar->rx_pin, lidar->tx_pin, 115200, LIDAR_BUFFER_SIZE);
+    uart_init(lidar->port_num, lidar->rx_pin, lidar->tx_pin, 115200, 3 * LIDAR_BUFFER_SIZE / 2);
 
     ledc_timer_config_t ledc_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -493,7 +495,7 @@ int lidar_get_health(lidar_health_t *health)
  */
 int lidar_clear_input(lidar_t *lidar)
 {
-    uart_flush(0);
+    uart_flush_buffer(UART_NUM_0);
     return 0;
 }
 
@@ -559,17 +561,17 @@ int lidar_start_exp_scan(lidar_t *lidar)
     _read_descriptor(&descriptor);
     if (descriptor.dsize != LIDAR_EXP_SCAN_RESP_LEN)
     {
-        printf("Descriptor size: %d\n", descriptor.dsize);
+        ESP_LOGE("LIDAR_START_EXP", "Descriptor size: %d\n", descriptor.dsize);
         return -1;
     }
     if (descriptor.is_single)
     {
-        printf("Not single\n");
+        ESP_LOGE("LIDAR_START_EXP", "Not single\n");
         return -1;
     }
     if (descriptor.dtype != LIDAR_EXP_SCAN_DTYPE)
     {
-        printf("Descriptor type: %d\n", descriptor.dtype);
+        ESP_LOGE("LIDAR_START_EXP", "Descriptor type: %d\n", descriptor.dtype);
         return -1;
     }
     lidar->scanning = true;
@@ -586,7 +588,7 @@ int lidar_start_exp_scan(lidar_t *lidar)
 int lidar_stop_scan(lidar_t *lidar)
 {
     _send_cmd(LIDAR_STOP);
-    vTaskDelay(1 / portTICK_PERIOD_MS);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
     lidar->scanning = false;
     int ret = lidar_clear_input(lidar);
     return ret;
@@ -613,7 +615,7 @@ int lidar_reset(lidar_t *lidar)
  */
 int lidar_print_scan(scan_t *scan)
 {
-    printf("Angle: %u, Distance: %lu, Quality: %u \n", scan->angle_q6 >> 6, scan->distance_q2 >> 2, scan->quality);
+    ESP_LOGE("LIDAR", "Angle: %u, Distance: %lu, Quality: %u \n", scan->angle_q6 >> 6, scan->distance_q2 >> 2, scan->quality);
     return 0;
 }
 
@@ -627,7 +629,7 @@ int lidar_print_exp_scan(express_scan_t *scan)
 {
     for (int i = 0; i < 32; i++)
     {
-        printf("%u : %u \n", scan->angles[i] >> 6, scan->distances[i]);
+        ESP_LOGE("LIDAR", "%u : %u \n", scan->angles[i] >> 6, scan->distances[i]);
     }
     return 0;
 }
@@ -699,6 +701,12 @@ int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t *distances)
         return -1;
     }
 
+    int bytes_waiting = uart_in_waiting(UART_NUM_0);
+    if (bytes_waiting > LIDAR_BUFFER_SIZE) {
+        lidar_stop_scan(lidar);
+        lidar_start_exp_scan(lidar);
+    }
+
     size_t num_points = 360;
     int shift_factor = 6;
     switch (lidar->density)
@@ -729,7 +737,7 @@ int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t *distances)
     int ret = _read_response(raw, dsize);
     if (ret < dsize)
     {
-        printf("Error reading response, read %d bytes\n", ret);
+        ESP_LOGE("LIDAR", "Error reading response, read %d bytes\n", ret);
         return -1;
     }
     _get_raw_scan_express(&scan_raw_1, raw);
@@ -743,7 +751,7 @@ int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t *distances)
         // printf("Read: %d, expected: %d\n", uart_in_waiting(0));
         if (ret < dsize)
         {
-            printf("Error reading response, read %d bytes\n", ret);
+            ESP_LOGE("LIDAR", "Error reading response, read %d bytes\n", ret);
             return -1;
         }
         _get_raw_scan_express(&scan_raw_2, raw);
@@ -773,7 +781,6 @@ int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t *distances)
             angle_prev = angle;
         }
     }
-
     free(raw);
     return 0;
 }

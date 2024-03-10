@@ -23,6 +23,7 @@ typedef struct __attribute__((__packed__)) packets_wrapper {
     serial_mbot_motor_pwm_t motor_pwm;
 } packets_wrapper_t;
 
+uint8_t checksum(uint8_t* addends, int len);
 void encode_rospkt(uint8_t* data, uint16_t len, uint16_t topic, uint8_t* pkt);
 int decode_rospkt(uint8_t* pkt, uint8_t* data, uint16_t* len, uint16_t* topic);
 void encode_botpkt(packets_wrapper_t* data, uint8_t* mac, uint8_t* pkt);

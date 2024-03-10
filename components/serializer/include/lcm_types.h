@@ -18,7 +18,10 @@ enum message_topics {
     MBOT_MOTOR_VEL_CMD = 231,
     MBOT_MOTOR_VEL = 232,
     MBOT_MOTOR_PWM = 233,
-    MBOT_VEL = 234
+    MBOT_VEL = 234,
+    MBOT_LIDAR_SCAN = 240,
+    MBOT_CAMERA_FRAME = 241,
+    MBOT_ERROR = 250,
 };
 
 typedef struct __attribute__((__packed__)) serial_pose2D_t {
@@ -145,6 +148,24 @@ typedef struct __attribute__((__packed__)) serial_mbot_slam_reset_t {
     bool retain_pose; // Whether to keep the pose when resetting.
 } serial_mbot_slam_reset_t;
 
+typedef struct __attribute__((__packed__)) serial_lidar_scan_t {
+    int64_t utime;
+    uint16_t ranges[360];
+} serial_lidar_scan_t;
+
+typedef struct __attribute__((__packed__)) serial_camera_frame_t {
+    int64_t utime;
+    uint16_t width;
+    uint16_t height;
+    uint8_t format;
+    uint8_t data[0];
+} serial_camera_frame_t;
+
+typedef struct __attribute__((__packed__)) serial_mbot_error_t {
+    int64_t utime;
+    uint16_t error_code;
+} serial_mbot_error_t;
+
 void pose2D_t_deserialize(uint8_t* src, serial_pose2D_t* dest);
 void pose2D_t_serialize(serial_pose2D_t* src, uint8_t* dest);
 void mbot_motor_vel_t_deserialize(uint8_t* src, serial_mbot_motor_vel_t* dest);
@@ -175,5 +196,7 @@ void mbot_message_received_t_deserialize(uint8_t* src, serial_mbot_message_recei
 void mbot_message_received_t_serialize(serial_mbot_message_received_t* src, uint8_t* dest);
 void mbot_slam_reset_t_deserialize(uint8_t* src, serial_mbot_slam_reset_t* dest);
 void mbot_slam_reset_t_serialize(serial_mbot_slam_reset_t* src, uint8_t* dest);
+void mbot_error_t_deserialize(uint8_t* src, serial_mbot_error_t* dest);
+void mbot_error_t_serialize(serial_mbot_error_t* src, uint8_t* dest);
 
 #endif

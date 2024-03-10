@@ -43,7 +43,7 @@
 #define LIDAR_BAUDRATE              115200
 #define LIDAR_MAX_MOTOR_PWM         (1 << 10)
 #define LIDAR_DEFAULT_MOTOR_PWM     600
-#define LIDAR_BUFFER_SIZE           1024
+#define LIDAR_BUFFER_SIZE           2048
 
 typedef enum {
     SCAN_TYPE_NORMAL,

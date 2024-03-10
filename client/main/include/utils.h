@@ -38,10 +38,7 @@
 #define WIFI_CONNECTED_BIT      BIT0
 #define WIFI_FAIL_BIT           BIT1
 
-#define PAIR_PRESSED_BIT        BIT0 
-
 extern EventGroupHandle_t s_wifi_event_group;
-extern EventGroupHandle_t s_pair_event_group;
 
 void utils_init();
 int find_paired_ssid(char *ssid);
@@ -49,7 +46,6 @@ void set_paired_ssid(char *ssid);
 void get_sta_config(wifi_config_t *wifi_config);
 void set_sta_config(wifi_config_t *wifi_config, char* ssid);
 void start_wifi_event_handler();
-void wait_for_pair();
 int wait_for_connect(int attempts);
 
 #endif

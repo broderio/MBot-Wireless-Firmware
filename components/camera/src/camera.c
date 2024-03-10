@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include "camera.h"
 
-void camera_init(camera_pins_t *pins) {
+esp_err_t camera_init(camera_pins_t *pins) {
     camera_config_t camera_config = {
         .pin_pwdn = -1,
         .pin_reset = -1,
@@ -33,11 +33,11 @@ void camera_init(camera_pins_t *pins) {
         .fb_count = 1,       //When jpeg mode is used, if fb_count more than one, the driver will work in continuous mode.
         .grab_mode = CAMERA_GRAB_WHEN_EMPTY
     };
-    ESP_ERROR_CHECK(esp_camera_init(&camera_config));
+    return esp_camera_init(&camera_config);
 }
 
-void camera_deinit() {
-    ESP_ERROR_CHECK(esp_camera_deinit());
+esp_err_t camera_deinit() {
+     return esp_camera_deinit();
 }
 
 void camera_capture_frame(camera_fb_t** frame) {

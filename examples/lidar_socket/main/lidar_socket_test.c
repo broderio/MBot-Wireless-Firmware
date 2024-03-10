@@ -35,8 +35,8 @@
 
 #define DENSITY                 1
 
-#define LIDAR_TX_PIN                43                  /**< GPIO Pin for UART transmit line */
-#define LIDAR_RX_PIN                44                  /**< GPIO Pin for UART receive line */
+#define LIDAR_TX_PIN                44                  /**< GPIO Pin for UART transmit line */
+#define LIDAR_RX_PIN                43                  /**< GPIO Pin for UART receive line */
 #define LIDAR_PWM_PIN               1                   /**< GPIO Pin for LIDAR PWM signal */
 
 static const char *NETWORK_TEST_TAG = "NETWORK_TEST";
@@ -59,6 +59,7 @@ void lidar_task(void*)
         lidar_start_exp_scan(&lidar);
         while (1) 
         {
+            int ret = lidar_get_exp_scan_360(&lidar, scan + 1);
             if (!connected)
             {
                 lidar_stop_scan(&lidar);
@@ -66,8 +67,7 @@ void lidar_task(void*)
                 vTaskSuspend(NULL);
                 break;
             }
-            int ret = lidar_get_exp_scan_360(&lidar, scan + 1);
-            if (ret < 0)
+            else if (ret < 0)
             {
                 ESP_LOGE(NETWORK_TEST_TAG, "Error getting scan");
                 lidar_stop_scan(&lidar);
@@ -104,6 +104,7 @@ void socket_task(void*)
                 xTaskDelayUntil(&last_wake_time, 100 / portTICK_PERIOD_MS);
             }
         }
+        vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
 
