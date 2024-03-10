@@ -1,3 +1,3 @@
-idf_component_register(SRCS "host.c"
-                    INCLUDE_DIRS "."
-                    REQUIRES buttons fram host_messaging joystick)
+idf_component_register(SRCS "src/host.c" "src/utils.c"
+                    INCLUDE_DIRS "include"
+                    REQUIRES esp_wifi esp_timer nvs_flash sockets buttons led joystick usb_device serializer)
