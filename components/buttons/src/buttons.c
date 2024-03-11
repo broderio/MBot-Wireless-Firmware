@@ -1,440 +1,292 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/timers.h"
+#include "freertos/event_groups.h"
+
+#include "esp_log.h"
 #include "driver/gpio.h"
 
 #include "buttons.h"
 
-#define BUTTON_RELEASE_BIT BIT0
-#define BUTTON_PRESS_BIT BIT1
+#define TAG "BUTTON_BASE"
 
-#pragma pack(push, 1)
-
-typedef struct button_isr_args_t button_isr_args_t;
-
-typedef struct button_isr_args_t {
-    QueueHandle_t *queue;
-    EventGroupHandle_t *event_group;
-    button_config_t *cfg;
-    uint8_t pin;
-    button_isr_args_t *next;
-} button_isr_args_t;
-
-#pragma pack(pop)
-
-static button_config_t cfgs[4];
-static QueueHandle_t queues[4];
-static button_isr_args_t *_buttons[4];
-static int num_button_configs = 0;
-
-static void buttons_isr(void* arg) {
-    static int pair_down = 0;
-    button_isr_args_t *button_args = (button_isr_args_t*) arg;
-    button_config_t *cfg = button_args->cfg;
-    uint8_t pin = button_args->pin;
-    QueueHandle_t *queue = button_args->queue;
-    xQueueSendFromISR(*queue, &pin, NULL);
-
-    // Set the event bits
-    if (pair_down) {
-        xEventGroupSetBits(*button_args->event_group, BUTTON_RELEASE_BIT);
-        pair_down = 0;
-    }
-    else {
-        xEventGroupSetBits(*button_args->event_group, BUTTON_PRESS_BIT);
-        pair_down = 1;
-    }
-
-    // Call the callback
-    if (cfg->callback) {
-        cfg->callback(cfg->args);
-    }
-}
-
-int _alloc_buttons(button_isr_args_t** args, button_config_t* cfg, QueueHandle_t* queue, uint8_t num_buttons) {
-    button_isr_args_t *args_ptr = NULL;
-    button_isr_args_t *prev_args_ptr = NULL;
-    for (int i = 0; i < num_buttons; i++) {
-        args_ptr = (button_isr_args_t*) malloc(sizeof(button_isr_args_t));
-        if (args_ptr == NULL) {
-            ESP_LOGE("BUTTONS", "Failed to allocate memory for button ISR args");
-            return -1;
-        }
-
-        args_ptr->event_group = malloc(sizeof(EventGroupHandle_t));
-        if (args_ptr->event_group == NULL) {
-            ESP_LOGE("BUTTONS", "Failed to allocate memory for button event group");
-            free(args_ptr);
-            return -1;
-        }
-
-        *args_ptr->event_group = xEventGroupCreate();
-        args_ptr->cfg = cfg;
-        args_ptr->queue = queue;
-        args_ptr->pin = -1;
-        args_ptr->next = NULL;
-
-        if (prev_args_ptr != NULL) {
-            prev_args_ptr->next = args_ptr;
-        } else {
-            *args = args_ptr;  // Set the head of the list
-        }
-
-        prev_args_ptr = args_ptr;
-    }
-    return 0;
-}
-
-int _dealloc_buttons(button_isr_args_t** args) {
-    button_isr_args_t *args_ptr = *args;
-    while (args_ptr != NULL) {
-        button_isr_args_t *next = args_ptr->next;
-        vEventGroupDelete(*args_ptr->event_group);
-        free(args_ptr->event_group);
-        free(args_ptr);
-        args_ptr = next;
-    }
-    return 0;
-}
-
-int buttons_init(button_config_t *cfg) {
-    // Check if the maximum number of button configs has been reached
-    if (num_button_configs >= 4) {
-        ESP_LOGE("BUTTONS", "Maximum number of button configs reached");
-        return -1;
-    }
-
-    // Find the next available slot for the button
-    int next_available = -1;
-    for (int i = 0; i < 4; i++) {
-        if (_buttons[i] == NULL) {
-            next_available = i;
-            break;
-        }
-    }
-    if (next_available == -1) {
-        ESP_LOGE("BUTTONS", "No available slots for button");
-        return -1;
-    }
-
-    // Check the validity of the button configuration
-    assert(cfg->pin_bit_mask != 0);
-    assert(cfg->double_press_time_ms > 0);
-    assert(cfg->long_press_time_ms > 0);
-    assert(cfg->hold_time_ms > 0 && cfg->hold_time_ms > cfg->long_press_time_ms);
-
-    // Count the number of buttons in the configuration
-    uint8_t num_buttons = 0;
-    for (int i = 0; i < sizeof(cfg->pin_bit_mask) * 8; ++i) 
-    {
-        if (cfg->pin_bit_mask & (1 << i)) 
-        {
-            num_buttons++;
-        }
-    }
-    
-    // Allocate memory for the button configuration and ISR arguments
-    memcpy(&cfgs[next_available], cfg, sizeof(button_config_t));
-    queues[next_available] = xQueueCreate(10, sizeof(uint8_t));
-    int ret = _alloc_buttons(&_buttons[next_available], 
-                             &cfgs[next_available], 
-                             &queues[next_available], 
-                             num_buttons);
-    if (ret != 0) {
-        ESP_LOGE("BUTTONS", "Failed to allocate memory for button ISR args");
-        return -1;
-    }
-    
-    // Configure the GPIO pins
-    gpio_config_t io_conf = {
-        .pin_bit_mask = cfg->pin_bit_mask,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = 1,
-        .pull_down_en = 0,
-        .intr_type = GPIO_INTR_ANYEDGE
-    };
-    gpio_config(&io_conf);
-    
-    num_button_configs++;
-
-    // Add the ISR for each button
-    button_isr_args_t *args = _buttons[next_available];
-    ESP_LOGI("BUTTONS", "pin_bit_mask: %llu", cfg->pin_bit_mask);
-    for (int i = 0; i < 64; ++i) 
-    {
-        if (cfg->pin_bit_mask & ((uint64_t)1 << i)) 
-        {
-            args->pin = i;
-            ESP_LOGI("BUTTONS", "Adding ISR for pin %d", i);
-            esp_err_t err = gpio_isr_handler_add(i, buttons_isr, (void*)args);
-            if (err == ESP_ERR_INVALID_STATE) 
-            {
-                gpio_install_isr_service(0);
-                err = gpio_isr_handler_add(i, buttons_isr, (void*)args);
-            }
-            if (err != ESP_OK) 
-            {
-                ESP_LOGE("BUTTONS", "Failed to add ISR for pair button. error: %s", esp_err_to_name(err));
-                buttons_deinit(next_available);
-                return -1;
-            }
-            args = args->next;
-            if (args == NULL) 
-            {
-                break;
-            }
-        }
-    }
-
-    return next_available;
-}
-
-void buttons_deinit(int buttons) {
-    if (buttons < 0 || buttons >= num_button_configs) {
-        ESP_LOGE("BUTTONS", "Invalid button index for deinitialization");
-        return;
-    }
-
-    if (_buttons[buttons] == NULL) {
-        ESP_LOGW("BUTTONS", "Button already deinitialized");
-        return;
-    }
-
-    _dealloc_buttons(&_buttons[buttons]);
-    num_button_configs--;
-}
+/**< Defintions of private structures and functions */
 
 typedef enum {
-    FIRST_EVENT,
-    SECOND_EVENT,
-    PRESS_STATE
-} BUTTON_STATE;
+    BUTTON_READ_TYPE_POLL,
+    BUTTON_READ_TYPE_ISR
+} button_read_type_t;
 
-void buttons_wait_for_event(int buttons, button_event_t *event, TickType_t ticks_to_wait)
-{
-    // Clear the queue and event group bits
-    xQueueReset(queues[buttons]);
-    button_isr_args_t *args = _buttons[buttons];
-    while (args != NULL) {
-        xEventGroupClearBits(*args->event_group, BUTTON_RELEASE_BIT | BUTTON_PRESS_BIT);
-        args = args->next;
-    }
-
-    // Wait for the button press
-    event->pin = -1;
-    int ret = xQueueReceive(queues[buttons], &event->pin, ticks_to_wait);
-    if (ret != pdTRUE) {
-        event->type = NO_PRESS;
-        return;
-    }
-
-    // Get the pointer to the button that was pressed
-    args = _buttons[buttons];
-    while (args != NULL) {
-        if (args->pin == event->pin) {
-            break;
-        }
-        args = args->next;
-    }
-    if (args == NULL) {
-        ESP_LOGE("BUTTONS", "Failed to find button ISR args for pin %d", event->pin);
-        event->type = NO_PRESS;
-        return;
-    }
+/**
+ * @brief Structure representing a button.
+ */
+struct button_t {
+    uint32_t _held_threshold; /**< The threshold time in milliseconds for considering the button as held. */
     
-    EventGroupHandle_t *event_group = args->event_group;
-    button_config_t *cfg = args->cfg;
-    TickType_t dt = 0;
+    button_callback_t _pressed_callback; /**< Callback function to be called when the button is pressed. */
+    void *_pressed_callback_arg; /**< Optional argument to be passed to the pressed callback function. */
+    
+    button_callback_t _pressed_for_callback; /**< Callback function to be called when the button is pressed for a specified duration. */
+    void *_pressed_for_callback_arg; /**< Optional argument to be passed to the pressed for callback function. */
+    
+    uint8_t _pressed_callback_called; /**< Flag indicating whether the pressed callback function has been called. */
+    uint8_t _released_callback_called; /**< Flag indicating whether the released callback function has been called. */
+    uint8_t _pressed_for_callback_called; /**< Flag indicating whether the pressed for callback function has been called. */
+    uint8_t _released_for_callback_called; /**< Flag indicating whether the released for callback function has been called. */
+    
+    uint8_t _pin; /**< The pin number to which the button is connected. */
+    uint32_t _db_time; /**< The debounce time in milliseconds. */
+    uint8_t _pu_enabled; /**< Flag indicating whether the internal pull-up resistor is enabled. */
+    uint8_t _intr_enabled; /**< Flag indicating whether the interrupt is enabled. */
 
-    // Event handling state machine
-    BUTTON_STATE state = FIRST_EVENT;
-    EventBits_t bits;
-    int press_count = 0;
-    TickType_t ticks_waited = ticks_to_wait;
-    while (true) {
-        switch (state) {
-            case FIRST_EVENT:
-                bits = xEventGroupWaitBits(*event_group,
-                        BUTTON_PRESS_BIT | BUTTON_RELEASE_BIT,
-                        pdFALSE,
-                        pdFALSE,
-                        ticks_waited);
-                // If we receive a press down event, go to the next state
-                if (bits & BUTTON_PRESS_BIT) {
-                    dt = xTaskGetTickCount();
-                    ESP_LOGI("BUTTONS", "Pair button pressed!");
-                    xEventGroupClearBits(*event_group, BUTTON_PRESS_BIT);
-                    state = SECOND_EVENT;
-                    continue;
-                }
-                // If we receive a release event, return RELEASE
-                else if (bits & BUTTON_RELEASE_BIT) {
-                    ESP_LOGI("BUTTONS", "Pair button released!");
-                    event->type = RELEASE;
-                    return;
-                }
-                // If we receive no event and have no previous press, return NO_PRESS
-                else if (press_count == 0) {
-                    event->type = NO_PRESS;
-                    return;
-                }
-                // If we receive no event and have a previous press, return SHORT_PRESS 
-                else {
-                    event->type = SHORT_PRESS;
-                    return;
-                }
-                break;
-            case SECOND_EVENT:
-                bits = xEventGroupWaitBits(*event_group,
-                        BUTTON_RELEASE_BIT,
-                        pdFALSE,
-                        pdFALSE,
-                        pdMS_TO_TICKS(cfg->hold_time_ms));
-                dt = xTaskGetTickCount() - dt;
-                // If we receive a release event, go to the next state
-                if (bits & BUTTON_RELEASE_BIT) {
-                    ESP_LOGI("BUTTONS", "Pair button released!");
-                    xEventGroupClearBits(*event_group, BUTTON_RELEASE_BIT);
-                    state = PRESS_STATE;
-                    continue;
-                }
-                // If we receive no event and have no previous press, return HOLD
-                else if (press_count == 0) {
-                    event->type = HOLD;
-                    return;
-                }
-                // If we receive no event and have a previous press, return PRESS_AND_HOLD
-                else {
-                    event->type = PRESS_AND_HOLD;
-                    return;
-                }
-                break;
-            case PRESS_STATE:
-                // If there was a previous press, return DOUBLE_PRESS
-                if (press_count > 0) {
-                    event->type = DOUBLE_PRESS;
-                    return;
-                }
-                // If there was no previous press and the press time is less than the long press time, go to first state
-                else if (dt < pdMS_TO_TICKS(cfg->long_press_time_ms)) {
-                    press_count++;
-                    ticks_waited = pdMS_TO_TICKS(cfg->double_press_time_ms);
-                    state = FIRST_EVENT;
-                    continue;
-                }
-                // If there was no previous press and the press time is greater than or equal to the long press time, return LONG_PRESS
-                else {
-                    event->type = LONG_PRESS;
-                    return;
-                }
-                break;
-            default:
-                ESP_LOGE("BUTTONS", "Invalid button state");
-                event->type = NO_PRESS;
-                return;
-        }
+    uint8_t _active_low; /**< Flag indicating whether the button is active low. */
+    uint8_t _current_state; /**< The current state of the button (pressed or released). */
+    uint8_t _last_state; /**< The last state of the button (pressed or released). */
+    uint8_t _changed; /**< Flag indicating whether the button state has changed. */
+    uint32_t _time; /**< The current time in milliseconds. */
+    uint32_t _last_change; /**< The time of the last state change in milliseconds. */
+    uint8_t _was_held; /**< Flag indicating whether the button was held. */
+
+    EventGroupHandle_t _event_group; /**< Event group for button events. */    
+};
+
+/**
+ * @brief Reads the current state of the button pin.
+ * @param button The button object.
+ * @return The current state of the button pin (0 or 1).
+ */
+uint8_t _get_state(button_t *button) {
+    uint8_t state = gpio_get_level(button->_pin);
+    if (button->_active_low) {
+        state = !state;
+    }
+    return state;
+}
+
+uint32_t _get_time_ms() {
+    return xTaskGetTickCount() * portTICK_PERIOD_MS;
+}
+
+void _button_isr_handler(void *arg) {
+    button_t *button = (button_t *)arg;
+    button_read(button);
+}
+
+/**< Definitions of public functions */
+
+button_t *button_create(uint8_t pin) {
+    button_t *button = (button_t *)malloc(sizeof(button_t));
+    if (!button) {
+        ESP_LOGE(TAG, "Failed to allocate memory for button object");
+        return NULL;
+    }
+    memset(button, 0, sizeof(button_t));
+    
+    gpio_config_t io_conf;
+    io_conf.pin_bit_mask = (1ULL << pin);
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = 1;
+    io_conf.pull_down_en = 0;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&io_conf);
+    
+    button->_pin = pin;
+    button->_db_time = 35;
+    button->_held_threshold = 1000;
+    button->_active_low = 1;
+    button->_pu_enabled = 1;
+    button->_event_group = xEventGroupCreate();
+    button->_current_state = _get_state(button);
+    ESP_LOGI(TAG, "Button created on pin %d with state %d", pin, button->_current_state);
+    button->_time = _get_time_ms();
+    button->_last_state = button->_current_state;
+    button->_last_change = button->_time;
+
+
+    return button;
+}
+
+void button_free(button_t *button) {
+    if (button) {
+        vEventGroupDelete(button->_event_group);
+        gpio_isr_handler_remove(button->_pin);
+        gpio_reset_pin(button->_pin);
+        free(button);
     }
 }
 
-void buttons_get_event(int buttons, button_event_t *event)
-{
-    // Wait for the button press
-    event->pin = -1;
-    int ret = xQueueReceive(queues[buttons], &event->pin, 0);
-    if (ret != pdTRUE) {
-        event->type = NO_PRESS;
-        return;
-    }
+void button_interrupt_enable(button_t *button) {
+    gpio_install_isr_service(0);
+    gpio_intr_enable(button->_pin);
+    gpio_set_intr_type(button->_pin, GPIO_INTR_ANYEDGE);
+    gpio_isr_handler_add(button->_pin, _button_isr_handler, button);
+    button->_intr_enabled = 1;
+}
 
-    // Get the pointer to the button that was pressed
-    button_isr_args_t *args = _buttons[buttons];
-    while (args != NULL) {
-        if (args->pin == event->pin) {
-            break;
-        }
-        args = args->next;
-    }
-    if (args == NULL) {
-        ESP_LOGE("BUTTONS", "Failed to find button ISR args for pin %d", event->pin);
-        event->type = NO_PRESS;
-        return;
-    }
+void button_interrupt_disable(button_t *button) {
+    gpio_intr_disable(button->_pin);
+    gpio_isr_handler_remove(button->_pin);
+    button->_intr_enabled = 0;
+}
 
-    EventBits_t bits = xEventGroupGetBits(*(args->event_group));
-    if (bits & BUTTON_PRESS_BIT) {
-        event->type = PRESS;
-    }
-    else if (bits & BUTTON_RELEASE_BIT) {
-        event->type = RELEASE;
+void button_set_active_low(button_t *button) {
+    button->_active_low = 1;
+}
+
+void button_set_active_high(button_t *button) {
+    button->_active_low = 0;
+}
+
+uint8_t button_get_active_level(button_t *button) {
+    return button->_active_low;
+}
+
+void button_set_debounce_time(button_t *button, uint32_t time) {
+    button->_db_time = time;
+}
+
+uint32_t button_get_debounce_time(button_t *button) {
+    return button->_db_time;
+}
+
+void button_set_held_threshold(button_t *button, uint32_t time) {
+    button->_held_threshold = time;
+}
+
+uint32_t button_get_held_threshold(button_t *button) {
+    return button->_held_threshold;
+}
+
+void button_set_pull_up(button_t *button, uint8_t enabled) {
+    button->_pu_enabled = enabled;
+    gpio_set_pull_mode(button->_pin, enabled ? GPIO_PULLUP_ONLY : GPIO_FLOATING);
+}
+
+uint8_t button_get_pull_up(button_t *button) {
+    return button->_pu_enabled;
+}
+
+uint8_t button_read(button_t* button) {
+    uint32_t read_started_ms = _get_time_ms();
+    uint8_t state = _get_state(button);
+
+    uint8_t within_db_time = read_started_ms - button->_last_change < button->_db_time;
+    if (within_db_time) {
+        // Debounce time has not ellapsed
+        button->_changed = 0;
     }
     else {
-        event->type = NO_PRESS;
-    }
-}
+        // Debounce time has ellapsed
+        button->_last_state = button->_current_state;
+        button->_current_state = state;
+        button->_changed = button->_current_state != button->_last_state;
 
-void buttons_get_state(int buttons, uint64_t *pin_mask)
-{
-    *pin_mask = 0;
-    button_isr_args_t *args = _buttons[buttons];
-    while (args != NULL) {
-        if (gpio_get_level(args->pin))
-        {
-            *pin_mask |= (1 << args->pin);
+        if (button->_changed) {
+            if (read_started_ms - button->_last_change >= button->_held_threshold) {
+                button->_was_held = 1;
+            }
+            else {
+                button->_was_held = 0;
+            }
+            button->_last_change = read_started_ms;
         }
-        args = args->next;
+    }
+
+    if (button_was_released(button)) {
+        if (xPortInIsrContext()) {
+            xEventGroupSetBitsFromISR(button->_event_group, BIT0, NULL);
+        }
+        else {
+            xEventGroupSetBits(button->_event_group, BIT0);
+        }
+
+        if (!button->_was_held && button->_pressed_callback && !button->_pressed_callback_called) {
+            button->_pressed_callback_called = 1;
+            button->_pressed_callback(button->_pressed_callback_arg);
+            button->_pressed_callback_called = 0;
+        }
+        else if (button->_was_held && button->_pressed_for_callback && !button->_pressed_for_callback_called) {
+            button->_pressed_for_callback_called = 1;
+            button->_pressed_for_callback(button->_pressed_for_callback_arg);
+            button->_pressed_for_callback_called = 0;
+        }
+        button->_was_held = 0;
+    }
+    else if (button_was_pressed(button)) {
+        if (xPortInIsrContext()) {
+            xEventGroupSetBitsFromISR(button->_event_group, BIT1, NULL);
+        }
+        else {
+            xEventGroupSetBits(button->_event_group, BIT1);
+        }
+    }
+
+    button->_time = read_started_ms;
+
+    return button->_current_state;
+}
+
+void button_on_press(button_t *button, button_callback_t callback, void *arg) {
+    button->_pressed_callback = callback;
+    button->_pressed_callback_arg = arg;
+}
+
+void button_on_pressed_for(button_t *button, button_callback_t callback, void *arg) {
+    button->_pressed_for_callback = callback;
+    button->_pressed_for_callback_arg = arg;
+}
+
+uint8_t button_is_pressed(button_t *button) {
+    return button->_current_state;
+}
+
+uint8_t button_was_pressed(button_t *button) {
+    return button->_current_state && button->_changed;
+}
+
+uint8_t button_was_pressed_for(button_t *button, uint32_t duration) {
+    return button->_current_state && (button->_time - button->_last_change >= duration);
+}
+
+uint8_t button_is_released(button_t *button) {
+    return !button->_current_state;
+}
+
+uint8_t button_was_released(button_t *button) {
+    return !button->_current_state && button->_changed;
+}
+
+uint8_t button_was_released_for(button_t *button, uint32_t duration) {
+    return !button->_current_state && (button->_time - button->_last_change >= duration);
+}
+
+void button_wait_for_press(button_t *button) {
+    if (button->_intr_enabled) {
+        xEventGroupClearBits(button->_event_group, BIT1); 
+        xEventGroupWaitBits(button->_event_group, BIT1, pdTRUE, pdTRUE, portMAX_DELAY);
+    }
+    else {
+        while (!button_is_pressed(button)) {
+            button_read(button);
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+        }
     }
 }
 
-void buttons_clear_event(int buttons)
-{
-    // Clear the queue and event group bits
-    xQueueReset(queues[buttons]);
-    button_isr_args_t *args = _buttons[buttons];
-    while (args != NULL) {
-        xEventGroupClearBits(*args->event_group, BUTTON_RELEASE_BIT | BUTTON_PRESS_BIT);
-        args = args->next;
+void button_wait_for_release(button_t *button) {
+    if (button->_intr_enabled) {
+        xEventGroupClearBits(button->_event_group, BIT0); 
+        xEventGroupWaitBits(button->_event_group, BIT0, pdTRUE, pdTRUE, portMAX_DELAY);
     }
-}
-
-void buttons_set_callback(int buttons, void (*callback)(void *), void *args)
-{
-    cfgs[buttons].callback = callback;
-    cfgs[buttons].args = args;
-}
-
-void buttons_set_long_press_time(int buttons, uint16_t time_ms)
-{
-    cfgs[buttons].long_press_time_ms = time_ms;
-}
-
-void buttons_set_double_press_time(int buttons, uint16_t time_ms)
-{
-    cfgs[buttons].double_press_time_ms = time_ms;
-}
-
-void buttons_set_hold_time(int buttons, uint16_t time_ms)
-{
-    cfgs[buttons].hold_time_ms = time_ms;
-}
-
-void buttons_disable_pin(int buttons, uint8_t pin)
-{
-    esp_err_t err = gpio_isr_handler_remove(pin);
-    if (err != ESP_OK) {
-        ESP_LOGE("BUTTONS", "Failed to remove ISR for pin %d. error: %s", pin, esp_err_to_name(err));
+    else {
+        while (!button_is_released(button)) {
+            button_read(button);
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+        }
     }
-}
-
-void buttons_enable_pin(int buttons, uint8_t pin)
-{
-    esp_err_t err = gpio_isr_handler_add(pin, buttons_isr, (void*)_buttons[buttons]);
-    if (err != ESP_OK) {
-        ESP_LOGE("BUTTONS", "Failed to add ISR for pin %d. error: %s", pin, esp_err_to_name(err));
-    }
-}
-
-void buttons_get_config(int buttons, button_config_t *cfg)
-{
-    memcpy(cfg, _buttons[buttons]->cfg, sizeof(button_config_t));
 }

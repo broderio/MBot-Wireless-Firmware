@@ -37,6 +37,7 @@
 
 #define WIFI_CONNECTED_BIT      BIT0
 #define WIFI_FAIL_BIT           BIT1
+#define WIFI_DISCONNECTED_BIT   BIT2
 
 extern EventGroupHandle_t s_wifi_event_group;
 
@@ -47,5 +48,7 @@ void get_sta_config(wifi_config_t *wifi_config);
 void set_sta_config(wifi_config_t *wifi_config, char* ssid);
 void start_wifi_event_handler();
 int wait_for_connect(int attempts);
+void clear_wifi_event_group();
+int is_disconnected();
 
 #endif

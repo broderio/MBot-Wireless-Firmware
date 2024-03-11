@@ -66,6 +66,13 @@ connection_socket_t socket_server_accept(server_socket_t server)
     }
     int keepAlive = 1;
     setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(int));
+
+    int flags = fcntl(sock, F_GETFL);
+    if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) {
+        ESP_LOGE(SOCKET_TAG, "Unable to set socket non blocking: errno %d", errno);
+        return -1;
+    }
+
     ESP_LOGI(SOCKET_TAG, "Socket accepted!");
     return sock;
 }

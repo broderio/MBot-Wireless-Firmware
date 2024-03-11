@@ -45,27 +45,21 @@ static esp_err_t set_dns_server(esp_netif_t *netif, uint32_t addr, esp_netif_dns
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
+    led_t *led = (led_t *)arg;
     if (event_id == WIFI_EVENT_AP_STACONNECTED)
     {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
         num_connections_ap++;
         ESP_LOGI("HOST", "station "MACSTR" join, AID=%d", MAC2STR(event->mac), event->aid);
-        led_toggle(LED1_PIN);
-        vTaskDelay(250 / portTICK_PERIOD_MS);
-        led_toggle(LED1_PIN);
+        led_toggle(led);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        led_toggle(led);
     }
     else if (event_id == WIFI_EVENT_AP_STADISCONNECTED)
     {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
         num_connections_ap--;
         ESP_LOGI("HOST", "station "MACSTR" leave, AID=%d", MAC2STR(event->mac), event->aid);
-        led_toggle(LED1_PIN);
-        vTaskDelay(250 / portTICK_PERIOD_MS);
-        led_toggle(LED1_PIN);
-        vTaskDelay(250 / portTICK_PERIOD_MS);
-        led_toggle(LED1_PIN);
-        vTaskDelay(250 / portTICK_PERIOD_MS);
-        led_toggle(LED1_PIN);
     }
 }
 
@@ -123,7 +117,7 @@ void init_ap(wifi_config_t *wifi_ap_config) {
 
     wifi_config_t wifi_config = {
         .ap = {
-            .channel = 11,
+            .channel = 6,
             .authmode = WIFI_AUTH_WPA2_PSK,
             .password = AP_PASSWORD,
             .max_connection = MAX_CONN,
@@ -136,10 +130,11 @@ void init_ap(wifi_config_t *wifi_ap_config) {
     *wifi_ap_config = wifi_config;
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, wifi_ap_config));
 
+    led_t *led = led_create(LED1_PIN);
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
                                                         ESP_EVENT_ANY_ID,
                                                         &wifi_event_handler,
-                                                        NULL,
+                                                        led,
                                                         NULL));
     set_static_ip(ap_netif, MBOT_IP_ADDR, MBOT_NETMASK_ADDR, MBOT_GW_ADDR);
     ESP_LOGI("HOST", "Restarting Wi-Fi");

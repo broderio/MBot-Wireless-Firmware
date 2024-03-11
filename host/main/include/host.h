@@ -42,6 +42,16 @@
 
 #define PILOT_PIN               6
 
+#define PILOT_VX_SCALAR         0.5
+#define PILOT_WZ_SCALAR         -1.5
+
+typedef enum {
+    PILOT_STOP = BIT0,
+    PILOT_CONFIRM = BIT1,
+    SERIAL_STOP = BIT2,
+    SERIAL_CONFIRM = BIT3
+} control_mode_t;
+
 #pragma pack(push, 1)
 typedef struct packet_t {
     uint8_t *data;

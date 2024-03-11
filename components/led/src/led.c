@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
@@ -13,234 +14,142 @@
 
 #include "led.h"
 
-#define STOP_BLINKING_BIT BIT0
-#define BLINK_CONFIRM_BIT BIT1
+#define TAG "LED"
 
-#pragma pack(push, 1)
-typedef struct blink_arg_t blink_arg_t;
+/**
+ * @brief Structure representing an LED.
+*/
+struct led_t {
+    uint8_t _pin; /**< The pin number to which the LED is connected. */
+    uint8_t _state; /**< The current state of the LED (on or off). */
+    uint32_t _period; /**< The period of the blinking LED. */
+    uint8_t _is_blinking; /**< Flag indicating whether the LED is blinking. */
+    EventGroupHandle_t _event_group; /**< Event group for the LED. */
+};
 
-typedef struct blink_arg_t {
-    int pin;
-    int delay;
-    EventGroupHandle_t *event_group;
-    blink_arg_t *next;
-} blink_arg_t;
-#pragma pack(pop)
-
-static uint64_t led_pin_mask = 0;
-static uint64_t led_state = 0;
-static uint64_t led_blink_state = 0;
-
-static blink_arg_t *blinks = NULL;
-static uint8_t num_blinks = 0;
-
-int _check_mask(int pin)
-{
-    if (led_pin_mask & (1 << pin)) {
-        return 0;
-    }
-    return -1;
+/**
+ * @brief Private function to set state of LED
+*/
+void _led_set(led_t *led, uint8_t state) {
+    gpio_set_level(led->_pin, state);
+    led->_state = state;
 }
 
-void _blink_task(void* arg) {
-    blink_arg_t* blink_arg = (blink_arg_t*) arg;
+/**
+ * @brief Task function for blinking an LED.
+ *
+ * This task function is responsible for blinking an LED at a specified period.
+ * It toggles the LED state and delays for the specified period until it is
+ * interrupted by an event. Once the event is received, the task stops blinking
+ * the LED and turns it off.
+ *
+ * @param arg Pointer to the LED object.
+ */
+void _led_blink_task(void *arg) {
+    led_t *led = (led_t *)arg;
+    TickType_t xLastWakeTime;
     while (true) {
-        int state = (led_state >> blink_arg->pin) & 0b1;
-        gpio_set_level(blink_arg->pin, !state);
-        vTaskDelay(blink_arg->delay / portTICK_PERIOD_MS);
-        gpio_set_level(blink_arg->pin, state);
-        EventBits_t bits = xEventGroupGetBits(*blink_arg->event_group);
-        if (bits & STOP_BLINKING_BIT) {
-            xEventGroupClearBits(*blink_arg->event_group, STOP_BLINKING_BIT);
-            xEventGroupSetBits(*blink_arg->event_group, BLINK_CONFIRM_BIT);
-            vTaskDelete(NULL);
+        xLastWakeTime = xTaskGetTickCount();
+        if (xEventGroupGetBits(led->_event_group) & BIT0) {
+            xEventGroupClearBits(led->_event_group, BIT0);
+            break;
         }
-        vTaskDelay(blink_arg->delay / portTICK_PERIOD_MS);
+        _led_set(led, !led->_state);
+        xTaskDelayUntil(&xLastWakeTime, led->_period / 2 / portTICK_PERIOD_MS);
     }
+    xEventGroupSetBits(led->_event_group, BIT1);
+    _led_set(led, 0);
+    vTaskDelete(NULL);
 }
 
-int led_init(uint64_t pin_mask)
-{
-    led_pin_mask = pin_mask;
-    gpio_config_t config = {
-        .pin_bit_mask = pin_mask,
+/*< Public function definitions */
+
+led_t *led_create(uint8_t pin) {
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << pin),
         .mode = GPIO_MODE_OUTPUT,
-        .pull_down_en = 0,
-        .pull_up_en = 0,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
     };
-    int ret = gpio_config(&config);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE("LED", "Failed to initialize GPIOs.");
-        return -1;
+    esp_err_t err = gpio_config(&io_conf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure GPIO pin %d", pin);
+        return NULL;
     }
-    return 0;
+    gpio_set_level(pin, 0);
+
+    led_t *led = (led_t *)malloc(sizeof(led_t));
+    if (led == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for LED");
+        return NULL;
+    }
+    led->_pin = pin;
+    led->_state = 0;
+    led->_period = 0;
+    led->_is_blinking = 0;
+    led->_event_group = xEventGroupCreate();
+    return led;
 }
 
-void led_deinit()
-{
-    if (num_blinks > 0)
-    {
-        for (int i = 0; i < 64; ++i)
-        {
-            if ((led_blink_state >> i) & 0b1)
-            {
-                led_stop_blink(i);
-            }
-        }
-    }
-
-    // Deinit GPIOs
-}
-
-int led_on(int pin)
-{
-    if (_check_mask(pin) < 0) {
-        ESP_LOGE("LED", "Error, invalid pin.");
-        return -1;
-    }
-
-    if (led_is_blinking(pin))
-    {
-        led_stop_blink(pin);
-    }
-
-    led_state |= (1 << pin);
-    gpio_set_level(pin, 1);
-    return 0;
-}
-
-int led_off(int pin)
-{
-    if (_check_mask(pin) < 0) {
-        ESP_LOGE("LED", "Error, invalid pin.");
-        return -1;
-    }
-
-    if (led_is_blinking(pin))
-    {
-        led_stop_blink(pin);
+void led_free(led_t *led) {
+    if (led->_is_blinking) {
+        led_stop_blink(led);
     }
     
-    led_state &= ~(1 << pin);
-    gpio_set_level(pin, 0);
-    return 0;
+    free(led);
 }
 
-int led_toggle(int pin)
-{
-    if (_check_mask(pin) < 0) {
-        ESP_LOGE("LED", "Error, invalid pin.");
-        return -1;
-    }
-
-    if (led_is_blinking(pin))
-    {
-        led_stop_blink(pin);
-    }
-
-    led_state ^= (1 << pin);
-    gpio_set_level(pin, (led_state >> pin) & 0b1);
-    return 0;
-
+void led_on(led_t *led) {
+    led_set(led, 1);
 }
 
-blink_arg_t* _alloc_blink(int pin, int delay)
-{
-    // Traverse to first null element
-    blink_arg_t *curr_blink = blinks;
-    while (curr_blink != NULL) {
-        curr_blink = curr_blink->next;
-    }
-
-    // Allocate memory
-    curr_blink = (blink_arg_t*)malloc(sizeof(blink_arg_t));
-    if (curr_blink == NULL)
-    {
-        ESP_LOGE("LED", "Failed to allocate memory for blink args.");
-        return NULL;
-    }
-
-    curr_blink->event_group = (EventGroupHandle_t*)malloc(sizeof(EventGroupHandle_t));
-    if (curr_blink->event_group == NULL)
-    {
-        ESP_LOGE("LED", "Failed to allocate memory for blink event group.");
-        free(curr_blink);
-        return NULL;
-    }
-
-    // Assign variables
-    *curr_blink->event_group = xEventGroupCreate();
-    curr_blink->pin = pin;
-    curr_blink->delay = delay;
-    curr_blink->next = NULL;
-    return curr_blink;
+uint8_t led_is_on(led_t *led) {
+    return led_read(led) == 1;
 }
 
-void _dealloc_blink(int pin)
-{
-    // Traverse until we find the correct pin
-    blink_arg_t *prev_blink = NULL;
-    blink_arg_t *curr_blink = blinks;
-    while (curr_blink != NULL && curr_blink->pin != pin)
-    {
-        prev_blink = curr_blink;
-        curr_blink = curr_blink->next;
-    }
-    if (curr_blink == NULL)
-    {
-        ESP_LOGE("LED", "Error, invalid pin input to dealloc.");
+void led_off(led_t *led) {
+    led_set(led, 0);
+}
+
+uint8_t led_is_off(led_t *led) {
+    return led_read(led) == 0;
+}
+
+void led_set(led_t *led, uint8_t state) {
+    if (state == led->_state) {
         return;
     }
-
-    prev_blink->next = curr_blink->next;
-    vEventGroupDelete(*curr_blink->event_group);
-    free(curr_blink->event_group);
-    free(curr_blink);
+    if (led->_is_blinking) {
+        led_stop_blink(led);
+    }
+    _led_set(led, state);
 }
 
-int led_blink(int pin, int period)
-{
-    blink_arg_t *curr_blink = _alloc_blink(pin, period / 2);
-    if (curr_blink == NULL)
-    {
-        ESP_LOGE("LED", "Failed to allocate blink args.");
-        return -1;
-    }
-    
-    xTaskCreate(_blink_task, "blink_task", 1024, curr_blink, 5, NULL); // Pass curr_blink instead of &blinks[num_blinks]
-    led_blink_state |= (1 << pin);
-    num_blinks++;
-    return 0;
+uint8_t led_read(led_t *led) {
+    return led->_state;
 }
 
-int led_is_blinking(int pin)
-{
-    return (led_blink_state >> pin) & 0b1;
+void led_toggle(led_t *led) {
+    led_set(led, !led->_state);
 }
 
-int led_stop_blink(int pin)
-{
-    blink_arg_t *curr_blink = blinks;
-    while (curr_blink != NULL && curr_blink->pin != pin)
-    {
-        curr_blink = curr_blink->next;
+void led_blink(led_t *led, uint32_t period) {
+    if (led->_is_blinking) {
+        ESP_LOGW(TAG, "LED is already blinking");
+        return;
     }
-    if (curr_blink == NULL)
-    {
-        ESP_LOGE("LED", "Error, invalid pin input to stop blink.");
-        return -1;
-    }
+    led->_period = period;
+    xTaskCreate(_led_blink_task, "led_blink_task", 2048, (void *)led, 3, NULL);
+    led->_is_blinking = 1;
+}
 
-    xEventGroupSetBits(*curr_blink->event_group, STOP_BLINKING_BIT);
-    xEventGroupWaitBits(*curr_blink->event_group,
-                        BLINK_CONFIRM_BIT,
-                        pdFALSE,
-                        pdFALSE,
-                        portMAX_DELAY);
-    xEventGroupClearBits(*curr_blink->event_group, BLINK_CONFIRM_BIT);
-    _dealloc_blink(pin);
-    led_blink_state &= ~(1 << pin);
-    num_blinks--;
-    return 0;
+void led_stop_blink(led_t *led) {
+    if (!led->_is_blinking) {
+        ESP_LOGW(TAG, "LED is not blinking");
+        return;
+    }
+    xEventGroupSetBits(led->_event_group, BIT0);
+    xEventGroupWaitBits(led->_event_group, BIT1, pdTRUE, pdTRUE, portMAX_DELAY);
+    led->_is_blinking = 0;
 }

@@ -40,7 +40,7 @@ static SemaphoreHandle_t lidar_sem;
 static uint16_t ranges[360];
 
 client_socket_t client;
-uart_t uart;
+ uart_t uart;
 
 void tasks_init(void) {
     message_queue = xQueueCreate(64, sizeof(packet_t));
@@ -53,23 +53,38 @@ void tasks_init(void) {
 }
 
 typedef struct sender_task_args {
-    client_socket_t *client_ptr;
-    uart_t *uart_ptr;
+    client_socket_t *client;
+    uart_t *uart;
 } sender_task_args_t;
 
 void sender_task(void *args) {
-    sender_task_args_t *sender_task_args = (sender_task_args_t *)args;
-    client_socket_t *client_ptr = sender_task_args->client_ptr;
-    uart_t *uart_ptr = sender_task_args->uart_ptr;
+    sender_task_args_t *sender_args = (sender_task_args_t *)args;
+    client_socket_t *client_ptr = sender_args->client;
+    uart_t *uart_ptr = sender_args->uart;
+
     while (true) {
+        if (xEventGroupGetBits(connection_event_group) & DISCONNECT) {
+            ESP_LOGI("SENDER_TASK", "Waiting for reconnection.");
+            xQueueReset(message_queue);
+            vTaskDelete(NULL);
+        }
+
         packet_t message;
-        xQueueReceive(message_queue, &message, portMAX_DELAY);
+        BaseType_t err = xQueueReceive(message_queue, &message, 100 / portTICK_PERIOD_MS);
+        if (err != pdTRUE) {
+            continue;
+        }
         // ESP_LOGI("SENDER_TASK", "Received message from queue of length: %d", message.len);
 
         switch (message.dest) {
             case HOST:
-                // ESP_LOGI("SENDER_TASK", "Sending message to host of length: %d", message.len);
-                socket_client_send(*client_ptr, (char*)message.data, message.len);
+                ESP_LOGI("SENDER_TASK", "Sending message to host of length: %d", message.len);
+                int socket_err = socket_client_send(*client_ptr, (char*)message.data, message.len);
+                if (socket_err < 0) {
+                    ESP_LOGE("SENDER_TASK", "Error: Failed to send message to host.");
+                    free(message.data);
+                    vTaskDelete(NULL);
+                }
                 break;
             case MBOT:
                 ESP_LOGI("SENDER_TASK", "Sending message to mbot of length: %d", message.len);
@@ -80,12 +95,18 @@ void sender_task(void *args) {
         }
         free(message.data);
     }
+    free(sender_args);
 }
 
 void mbot_task(void *args) {
     uart_t *uart_ptr = (uart_t *)args;
 
     while (true) {
+        if (xEventGroupGetBits(connection_event_group) & DISCONNECT) {
+            ESP_LOGI("MBOT_TASK", "Waiting for reconnection.");
+            vTaskDelete(NULL);
+        }
+
         uint8_t header[ROS_HEADER_LEN] = {0};
 
         int bytes_read = uart_read(*uart_ptr, (char*)header, 1, 0);
@@ -151,9 +172,13 @@ void mbot_task(void *args) {
 }
 
 void socket_task(void *args) {
-    client_socket_t *client_ptr = (uart_t *)args;
-
+    client_socket_t *client_ptr = (client_socket_t *)args;
     while (true) {
+        if (xEventGroupGetBits(connection_event_group) & DISCONNECT) {
+            ESP_LOGI("SOCKET_TASK", "Waiting for reconnection.");
+            vTaskDelete(NULL);
+        }
+
         uint8_t header[ROS_HEADER_LEN] = {0};
         int bytes_read = socket_client_recv(*client_ptr, (char*)header, 1);
 
@@ -227,7 +252,8 @@ void lidar_read_task(void *args) {
         {
             ESP_LOGE("LIDAR_TASK", "Error initializing lidar");
             xEventGroupSetBits(lidar_event_group, LIDAR_INIT);
-            goto suspend;
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            continue;
         }
 
         start:
@@ -237,17 +263,17 @@ void lidar_read_task(void *args) {
             ESP_LOGE("LIDAR_TASK", "Error starting scan");
             xEventGroupSetBits(lidar_event_group, LIDAR_START_SCAN);
             lidar_deinit(&lidar);
-            goto suspend;
+            continue;
         }
 
         while (1) 
         {
             if (xEventGroupGetBits(connection_event_group) & DISCONNECT)
             {
-                ESP_LOGE("LIDAR_TASK", "Disconnected from server");
                 lidar_stop_scan(&lidar);
                 lidar_deinit(&lidar);
-                goto suspend;
+                ESP_LOGI("LIDAR_READ_TASK", "Waiting for reconnection.");
+                vTaskDelete(NULL);
             }
 
             xSemaphoreTake(lidar_sem, portMAX_DELAY);
@@ -262,16 +288,18 @@ void lidar_read_task(void *args) {
                 goto start;
             }
         }
-        suspend:
-        vTaskSuspend(NULL);
     }
 }
 
 void lidar_task(void* args) {
-    xTaskCreate(lidar_read_task, "lidar_read_task", 8192, NULL, 5, NULL);
     TickType_t xLastWakeTime;
     serial_lidar_scan_t scan = {0};
     while (1) {
+        if (xEventGroupGetBits(connection_event_group) & DISCONNECT) {
+            ESP_LOGI("LIDAR_TASK", "Waiting for reconnection.");
+            vTaskDelete(NULL);
+        }
+
         xLastWakeTime = xTaskGetTickCount();
         scan.utime = esp_timer_get_time();
         xSemaphoreTake(lidar_sem, portMAX_DELAY);
@@ -327,7 +355,7 @@ void camera_task(void*) {
         {
             ESP_LOGE("CAMERA_TASK", "Error initializing camera");
             xEventGroupSetBits(camera_event_group, CAMERA_INIT);
-            goto suspend;
+            vTaskDelete(NULL);
         }
         while (1) 
         {
@@ -337,7 +365,7 @@ void camera_task(void*) {
             {
                 camera_deinit();
                 ESP_LOGE("CAMERA_TASK", "Disconnected from server");
-                goto suspend;
+                vTaskDelete(NULL);
             }
 
             camera_capture_frame(&frame);
@@ -349,7 +377,7 @@ void camera_task(void*) {
                 ESP_LOGE("CAMERA_TASK", "Error: Failed to allocate memory for frame data.");
                 xEventGroupSetBits(camera_event_group, CAMERA_MALLOC);
                 camera_return_frame(frame);
-                goto suspend;
+                goto delay;
             }
             memcpy(msg->data, frame->buf, frame_size);
             msg->utime = esp_timer_get_time();
@@ -366,7 +394,7 @@ void camera_task(void*) {
                 ESP_LOGE("CAMERA_TASK", "Error: Failed to allocate memory for packet.");
                 xEventGroupSetBits(camera_event_group, CAMERA_MALLOC);
                 camera_return_frame(frame);
-                goto suspend;
+                goto delay;
             }
             
             encode_rospkt((uint8_t*)msg, sizeof(serial_camera_frame_t) + frame_size, MBOT_CAMERA_FRAME, packet.data);
@@ -379,18 +407,25 @@ void camera_task(void*) {
             }
 
             camera_return_frame(frame);
+
+            delay:
             xTaskDelayUntil(&xLastWakeTime, 100 / portTICK_PERIOD_MS);
         }
-        suspend:
-        vTaskSuspend(NULL);
     }
 }
 
 void heartbeat_task(void *args)
 {
     serial_timestamp_t timestamp = {0};
+    TickType_t xLastWakeTime;
     while (true)
     {
+        xLastWakeTime = xTaskGetTickCount();
+        if (xEventGroupGetBits(connection_event_group) & DISCONNECT) {
+            ESP_LOGI("HEARTBEAT_TASK", "Waiting for reconnection.");
+            vTaskDelete(NULL);
+        }
+
         timestamp.utime = esp_timer_get_time();
         uint8_t msg[sizeof(serial_timestamp_t)];
         timestamp_t_serialize(&timestamp, msg);
@@ -399,6 +434,12 @@ void heartbeat_task(void *args)
         packet.dest = MBOT;
         packet.len = sizeof(serial_timestamp_t) + ROS_PKG_LEN;
         packet.data = (uint8_t *)malloc(packet.len);
+        if (packet.data == NULL)
+        {
+            ESP_LOGE("HEARTBEAT_TASK", "Error: Failed to allocate memory for packet.");
+            goto delay;
+        }
+
         encode_rospkt(msg, sizeof(serial_timestamp_t), MBOT_TIMESYNC, packet.data);
 
         BaseType_t err = xQueueSend(message_queue, &packet, 50 / portTICK_PERIOD_MS);
@@ -408,7 +449,8 @@ void heartbeat_task(void *args)
             free(packet.data);
         }
 
-        vTaskDelay(500 / portTICK_PERIOD_MS);
+        delay:
+        xTaskDelayUntil(&xLastWakeTime, 500 / portTICK_PERIOD_MS);
     }
 }
 
@@ -429,12 +471,8 @@ void app_main(void)
     uart = UART_NUM_1;
     uart_init(uart, RC_TX_PIN, RC_RX_PIN, 115200, 1024);
 
-    button_config_t buttons_config = {
-        .pin_bit_mask = (0b1 << PAIR_PIN),
-        .long_press_time_ms = 1000,
-        .hold_time_ms = 2000,
-        .double_press_time_ms = 250};
-    int buttons = buttons_init(&buttons_config);
+    button_t *pair_button = button_create(PAIR_PIN);
+    button_interrupt_enable(pair_button);
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -460,28 +498,19 @@ void app_main(void)
             get_sta_config(&wifi_sta_config);
             ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_sta_config));
             // First pairing to connect to public broadcast of AP
-            button_event_t event = {0};
-            while (event.pin != PAIR_PIN && event.type != SHORT_PRESS)
-            {
-                buttons_wait_for_event(buttons, &event, portMAX_DELAY);
-            }
-            event.pin = -1;
-            event.type = NO_PRESS;
+            button_wait_for_press(pair_button);
 
             start_wifi_event_handler();
             esp_wifi_start();
             wait_for_connect(5);
+            clear_wifi_event_group();
 
             // Second pair to connect to private broadcast of AP
-            while (event.pin != PAIR_PIN && event.type != SHORT_PRESS)
-            {
-                buttons_wait_for_event(buttons, &event, portMAX_DELAY);
-            }
-            event.pin = -1;
-            event.type = NO_PRESS;
+            button_wait_for_press(pair_button);
 
             esp_wifi_disconnect();
             wait_for_connect(5);
+            clear_wifi_event_group();
             set_paired_ssid((char *)wifi_sta_config.sta.ssid);
             connected = 1;
         }
@@ -490,7 +519,8 @@ void app_main(void)
             set_sta_config(&wifi_sta_config, paired_ssid);
             start_wifi_event_handler();
             esp_wifi_start();
-            int timeout = wait_for_connect(3);
+            int timeout = wait_for_connect(5);
+            clear_wifi_event_group();
             if (timeout < 0)
             {
                 ESP_LOGE("CLIENT", "Failed to connect to AP. Starting pairing protocol...");
@@ -510,11 +540,56 @@ void app_main(void)
         client = socket_client_init(MBOT_HOST_IP_ADDR, 8000);
     }
 
-    TaskHandle_t sender_task_handle, lidar_task_handle;
-    sender_task_args_t sender_task_args = {&client, &uart};
-    xTaskCreate(sender_task, "sender_task", 8192, &sender_task_args, 3, &sender_task_handle);
+    TaskHandle_t sender_task_handle, lidar_task_handle, lidar_read_task_handle, socket_task_handle, mbot_task_handle, heartbeat_task_handle;
+
+    sender_task_args_t *sender_args = (sender_task_args_t*)malloc(sizeof(sender_task_args_t));
+    sender_args->client = &client;
+    sender_args->uart = &uart;
+    xTaskCreate(sender_task, "sender_task", 8192, sender_args, 4, &sender_task_handle);
+
+    xTaskCreate(lidar_read_task, "lidar_read_task", 8192, NULL, 5, &lidar_read_task_handle);
     xTaskCreate(lidar_task, "lidar_task", 8192, NULL, 4, &lidar_task_handle);
-    xTaskCreate(socket_task, "socket_task", 8192, &client, 4, NULL);
-    xTaskCreate(mbot_task, "mbot_task", 8192, &uart, 4, NULL);
-    xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 5, NULL);
+    xTaskCreate(socket_task, "socket_task", 8192, &client, 4, &socket_task_handle);
+    xTaskCreate(mbot_task, "mbot_task", 8192, &uart, 4, &mbot_task_handle);
+    xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 4, &heartbeat_task_handle);
+
+    while (true) {
+        if (is_disconnected()) {
+            ESP_LOGW("CLIENT", "Disconnected from AP. Attempting to reconnect...");
+            xEventGroupSetBits(connection_event_group, DISCONNECT);
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+
+             while (eTaskGetState(sender_task_handle) != eDeleted &&
+                    eTaskGetState(lidar_read_task_handle) != eDeleted &&
+                    eTaskGetState(lidar_task_handle) != eDeleted && 
+                    eTaskGetState(socket_task_handle) != eDeleted && 
+                    eTaskGetState(mbot_task_handle) != eDeleted && 
+                    eTaskGetState(heartbeat_task_handle) != eDeleted)
+            {
+                vTaskDelay(100 / portTICK_PERIOD_MS);
+            }
+
+            xEventGroupClearBits(connection_event_group, DISCONNECT);
+
+            wait_for_connect(-1);
+            clear_wifi_event_group();
+            socket_client_close(client);
+
+            client = socket_client_init(MBOT_HOST_IP_ADDR, 8000);
+            while (client < 0)
+            {
+                vTaskDelay(1000 / portTICK_PERIOD_MS);
+                client = socket_client_init(MBOT_HOST_IP_ADDR, 8000);
+            }
+
+            sender_args->client = &client;
+            xTaskCreate(sender_task, "sender_task", 8192, sender_args, 4, &sender_task_handle);
+            xTaskCreate(lidar_read_task, "lidar_read_task", 8192, NULL, 5, NULL);
+            xTaskCreate(lidar_task, "lidar_task", 8192, NULL, 4, &lidar_task_handle);
+            xTaskCreate(socket_task, "socket_task", 8192, &client, 4, &socket_task_handle);
+            xTaskCreate(mbot_task, "mbot_task", 8192, &uart, 4, &mbot_task_handle);
+            xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 4, &heartbeat_task_handle);
+        }
+        vTaskDelay(500 / portTICK_PERIOD_MS);  
+    }
 }

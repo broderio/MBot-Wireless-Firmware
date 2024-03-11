@@ -13,8 +13,9 @@ void uart_init(uart_t port, int rx_pin, int tx_pin, int baud_rate, size_t buffer
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    
-    ESP_ERROR_CHECK(uart_driver_install(port, buffer_size, 0, 0, NULL, 0));
+    if (!uart_is_driver_installed(port)) {
+        ESP_ERROR_CHECK(uart_driver_install(port, buffer_size, 0, 0, NULL, 0));
+    }
     ESP_ERROR_CHECK(uart_param_config(port, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(port, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 }

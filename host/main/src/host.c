@@ -3,7 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
-#include <string.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -35,6 +35,7 @@
 #include "host.h"
 #include "utils.h"
 
+#define MAX_EMPTY_READS 64
 #define BUFFER_SIZE 64
 
 typedef struct connection_args_t
@@ -43,9 +44,17 @@ typedef struct connection_args_t
     uint8_t robot_id;
 } connection_args_t;
 
+static connection_args_t *connections[MAX_CONN];
+
 server_socket_t server;
 
 QueueHandle_t usb_recv_queue[MAX_CONN];
+
+static EventGroupHandle_t control_mode_event_group;
+
+static uint8_t curr_robot_id = 0;
+
+static led_t *led;
 
 void connection_task(void *args)
 {
@@ -59,6 +68,7 @@ void connection_task(void *args)
     connection_socket_t connection = conn_args->connection;
     uint8_t robot_id = conn_args->robot_id;
     char trigger = 0x0;
+    int empty_reads = 0;
 
     while (true)
     {
@@ -70,22 +80,29 @@ void connection_task(void *args)
             if (bytes_sent < 0)
             {
                 ESP_LOGE("HOST", "Error sending data to client %d", robot_id);
-                break;
+                goto end;
             }
-            led_on(LED2_PIN);
         }
 
         int bytes_read = socket_connection_recv(connection, &trigger, 1);
         if (bytes_read == 0)
         {
+            empty_reads++;
+            if (empty_reads >= MAX_EMPTY_READS)
+            {
+                ESP_LOGW("HOST", "Client %d not sending data. Assuming disconnection...", robot_id);
+                goto end;
+            }
+            vTaskDelay(25 / portTICK_PERIOD_MS);
             continue;
         }
         else if (bytes_read < 0)
         {
-            break;
+            goto end;
         }
         else if (trigger == SYNC_FLAG)
         {
+            empty_reads = 0;
             uint8_t header[ROS_HEADER_LEN];
             header[0] = SYNC_FLAG;
 
@@ -96,7 +113,7 @@ void connection_task(void *args)
                 if (bytes < 0)
                 {
                     ESP_LOGE("HOST", "Error receiving header from client %d", robot_id);
-                    break;
+                    goto end;
                 }
                 bytes_read += bytes;
             }
@@ -119,7 +136,8 @@ void connection_task(void *args)
                 if (bytes < 0)
                 {
                     ESP_LOGE("HOST", "Error receiving data from client %d", robot_id);
-                    break;
+                    free(packet);
+                    goto end;
                 }
                 bytes_read += bytes;
             }
@@ -127,10 +145,12 @@ void connection_task(void *args)
             free(packet);
         }
     }
+    end:
     ESP_LOGW("HOST", "Client disconnected. Closing connection...");
     socket_connection_close(connection);
     num_connections_socket--;
     free(conn_args);
+    conn_args = NULL;
     vTaskDelete(NULL);
 }
 
@@ -139,25 +159,37 @@ void socket_task(void *args)
     while (true)
     {
         connection_socket_t connection = socket_server_accept(server);
-        if (connection > 0 && num_connections_socket < MAX_CONN)
+        if (connection > 0)
         {
-            ESP_LOGI("HOST", "Client connected.");
-            connection_args_t* connection_args = malloc(sizeof(connection_args_t));
-            if (connection_args == NULL)
-            {
-                ESP_LOGE("HOST", "Error allocating memory for connection args.");
-                continue;
+            if (num_connections_socket == MAX_CONN) {
+                socket_connection_close(connection);
+                ESP_LOGI("HOST", "Max number of connections reached.");
+                goto delay;
             }
-            connection_args->connection = connection;
-            connection_args->robot_id = num_connections_socket;
-            num_connections_socket++;
-            xTaskCreate(connection_task, "connection_task", 4096, (void *)connection_args, 5, NULL);
+
+            ESP_LOGI("HOST", "Client connected.");
+
+            for (int i = 0; i < MAX_CONN; ++i) {
+                if (connections[i] == NULL) {
+                    connections[i] = malloc(sizeof(connection_args_t));
+                    if (connections[i] == NULL) {
+                        ESP_LOGE("HOST", "Error allocating memory for connection args.");
+                        break;
+                    }
+                    connections[i]->connection = connection;
+                    connections[i]->robot_id = i;
+                    num_connections_socket++;
+                    xTaskCreate(connection_task, "connection_task", 4096, (void *)connections[i], 5, NULL);
+                    break;
+                }
+            }
         }
         else if (connection == -1)
         {
             ESP_LOGE("HOST", "Error accepting connection.");
         }
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        delay:
+        vTaskDelay(500 / portTICK_PERIOD_MS);
     }
 }
 
@@ -165,12 +197,25 @@ void socket_task(void *args)
 // Packet structure: [SYNC_FLAG, ROBOT_ID, MSG_LEN, [PACKET]]
 void usb_task(void *args)
 {
+    led_on(led);
     uint8_t trigger = 0x0;
-    led_on(LED2_PIN);
     while (true)
     {
+        if (xEventGroupGetBits(control_mode_event_group) & SERIAL_STOP)
+        {
+            xEventGroupClearBits(control_mode_event_group, SERIAL_STOP);
+            xEventGroupSetBits(control_mode_event_group, SERIAL_CONFIRM);
+            vTaskDelete(NULL);
+        }
+
         int bytes_read = usb_device_read(&trigger, 1);
-        if (bytes_read == 0)
+        if (bytes_read < 0)
+        {
+            ESP_LOGE("USB_TASK", "Error: Failed to read data from USB.");
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            continue;
+        }
+        else if (bytes_read == 0)
         {
             vTaskDelay(100 / portTICK_PERIOD_MS);
             continue;
@@ -207,9 +252,66 @@ void usb_task(void *args)
                 bytes_read += bytes;
             }
 
-            xQueueSend(usb_recv_queue[robot_id], &packet, portMAX_DELAY);
-            led_off(LED2_PIN);
+            BaseType_t err = xQueueSend(usb_recv_queue[robot_id], &packet, portMAX_DELAY);
+            if (err != pdTRUE)
+            {
+                ESP_LOGE("USB_TASK", "Error: Failed to send packet to message queue.");
+                free(packet.data);
+            }
         }
+    }
+}
+
+void pilot_task(void *args)
+{
+    led_off(led);
+    serial_twist2D_t vel_cmd = {0};
+    float vx_prev = 0.0, wz_prev = 0.0;
+    while (true)
+    {
+        if (xEventGroupGetBits(control_mode_event_group) & PILOT_STOP)
+        {
+            xEventGroupClearBits(control_mode_event_group, PILOT_STOP);
+            xEventGroupSetBits(control_mode_event_group, PILOT_CONFIRM);
+            vTaskDelete(NULL);
+        }
+
+        vel_cmd.utime = esp_timer_get_time();
+        float vx, wz;
+        joystick_get_output(&wz, &vx);
+
+        if (fabs(vx) < 0.05) vx = 0;
+        if (fabs(wz) < 0.05) wz = 0;
+
+        if (vx == vx_prev && wz == wz_prev)
+        {
+            vx_prev = vx;
+            wz_prev = wz;
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            continue;
+        }
+
+        vel_cmd.vx = vx * PILOT_VX_SCALAR;
+        vel_cmd.wz = wz * PILOT_WZ_SCALAR;
+
+        uint8_t msg[sizeof(serial_twist2D_t)];
+        twist2D_t_serialize(&vel_cmd, msg);
+
+        packet_t packet;
+        packet.len = sizeof(serial_twist2D_t) + ROS_PKG_LEN;
+        packet.data = (uint8_t *)malloc(packet.len);
+        encode_rospkt(msg, sizeof(serial_twist2D_t), MBOT_VEL_CMD, packet.data);
+
+        BaseType_t err = xQueueSend(usb_recv_queue[curr_robot_id], &packet, portMAX_DELAY);
+        if (err != pdTRUE)
+        {
+            ESP_LOGE("PILOT_TASK", "Error: Failed to send packet to message queue.");
+            free(packet.data);
+        }
+
+        vx_prev = vx;
+        wz_prev = wz;
+        vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
 
@@ -228,28 +330,41 @@ void app_main(void)
         usb_recv_queue[i] = xQueueCreate(32, sizeof(packet_t));
     }
 
-    usb_device_init();
+    control_mode_event_group = xEventGroupCreate();
 
-    led_init( (1 << LED1_PIN) | (1 << LED2_PIN) );
+    // usb_device_init();
 
-    button_config_t buttons_config = {
-        .pin_bit_mask = (0b1 << PAIR_PIN),
-        .long_press_time_ms = 1000,
-        .hold_time_ms = 2000,
-        .double_press_time_ms = 250};
-    int buttons = buttons_init(&buttons_config);
+    joystick_config_t js_config = {
+        .x_pin = 5,
+        .y_pin = 4,
+        .x_in_max = 916,
+        .x_in_min = 22,
+        .x_out_max = 1,
+        .x_out_min = -1,
+        .y_in_max = 907,
+        .y_in_min = 0,
+        .y_out_max = 1,
+        .y_out_min = -1,
+    };
+    joystick_init(&js_config);
+
+    led = led_create(LED2_PIN);
+
+    button_t *pair_button = button_create(PAIR_PIN);
+    button_interrupt_enable(pair_button);
+
+    button_t *pilot_button = button_create(PILOT_PIN);
+    button_interrupt_enable(pilot_button);
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    int pair_immediate = 0;
-    uint64_t pin_mask;
-    buttons_get_state(buttons, &pin_mask);
-    if (~pin_mask & (0b1 << PAIR_PIN))
+    int pairing_mode = 0;
+    if (button_is_pressed(pair_button))
     {
-        ESP_LOGI("HOST", "Pair button is pressed. Hosting private AP immediately.");
-        pair_immediate = 1;
-        led_on(LED1_PIN);
+        ESP_LOGI("HOST", "Pair button is pressed. Going into pairing mode.");
+        pairing_mode = 1;
+        button_wait_for_release(pair_button);
     }
 
     // Init Wi-Fi
@@ -257,9 +372,9 @@ void app_main(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    if (!pair_immediate)
+    if (pairing_mode)
     {
-        led_blink(LED1_PIN, 100);
+        led_blink(led, 500);
         wifi_config_t wifi_sta_config;
         init_sta(&wifi_sta_config);
         wait_for_no_hosts();
@@ -267,24 +382,18 @@ void app_main(void)
 
     // Init AP config
     wifi_config_t wifi_ap_config;
-    if (pair_immediate)
+    if (!pairing_mode)
     {
         wifi_ap_config.ap.ssid_hidden = 1;
     }
     init_ap(&wifi_ap_config);
 
     // Once the MBotWireless AP is started, wait for a client to connect to the AP and the socket
-    button_event_t event = {0};
-    if (!pair_immediate)
+    if (pairing_mode)
     {
-        led_on(LED1_PIN);
+        led_on(led);
         ESP_LOGI("HOST", "Press the pair button once all clients are connected.");
-        while (event.pin != PAIR_PIN && event.type != SHORT_PRESS)
-        {
-            buttons_wait_for_event(buttons, &event, portMAX_DELAY);
-        }
-        event.pin = -1;
-        event.type = NO_PRESS;
+        button_wait_for_press(pair_button);
 
         if (num_connections_ap == 0)
         {
@@ -297,17 +406,33 @@ void app_main(void)
 
     server = socket_server_init(8000);
 
-    if (!pair_immediate)
+    if (pairing_mode)
     {
-        while (event.pin != PAIR_PIN && event.type != SHORT_PRESS)
-        {
-            buttons_wait_for_event(buttons, &event, portMAX_DELAY);
-        }
-        event.pin = -1;
-        event.type = NO_PRESS;
+        ESP_LOGI("HOST", "Press the pair button to start the tasks.");
+        button_wait_for_press(pair_button);
     }
-    led_off(LED1_PIN);
+    led_off(led);
 
-    xTaskCreate(usb_task, "usb_task", 4096, NULL, 5, NULL);
+    xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 5, NULL);
     xTaskCreate(socket_task, "socket_task", 4096, NULL, 4, NULL);
+
+    int state = 0;
+    while (true)
+    {
+        button_wait_for_press(pilot_button);
+        if (state == 0) {
+            xEventGroupSetBits(control_mode_event_group, PILOT_STOP);
+            xEventGroupWaitBits(control_mode_event_group, PILOT_CONFIRM, pdTRUE, pdTRUE, portMAX_DELAY);
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            xTaskCreate(usb_task, "usb_task", 4096, NULL, 5, NULL);
+            state = 1;
+        }
+        else if (state == 1) {
+            xEventGroupSetBits(control_mode_event_group, SERIAL_STOP);
+            xEventGroupWaitBits(control_mode_event_group, SERIAL_CONFIRM, pdTRUE, pdTRUE, portMAX_DELAY);
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 5, NULL);
+            state = 0;
+        }
+    }
 }

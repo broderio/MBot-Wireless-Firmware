@@ -346,8 +346,8 @@ int lidar_deinit(lidar_t *lidar)
     {
         lidar_stop_scan(lidar);
     }
-    uart_deinit(lidar->port_num);
     lidar_reset(lidar);
+    uart_deinit(lidar->port_num);
     lidar_stop_motor(lidar);
     return 0;
 }

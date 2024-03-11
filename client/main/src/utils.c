@@ -42,6 +42,11 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
     } 
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
+        if (conn_attempts == 0) {
+            xEventGroupSetBits(s_wifi_event_group, WIFI_DISCONNECTED_BIT);
+            ESP_LOGI("CLIENT", "Disconnected from AP");
+        }
+
         if (max_conn_attempts > 0 && conn_attempts >= max_conn_attempts) {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
             ESP_LOGI("CLIENT", "Failed to connect to the AP");
@@ -61,15 +66,6 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
 }
 
 void utils_init() {
-    gpio_config_t pair_config = {
-        .pin_bit_mask = (0b1 << PAIR_PIN),
-        .mode = GPIO_MODE_INPUT,
-        .pull_down_en = 0,
-        .pull_up_en = 1,
-        .intr_type = GPIO_INTR_POSEDGE,
-    };
-    gpio_config(&pair_config);
-
     s_wifi_event_group = xEventGroupCreate();
     assert(s_wifi_event_group);
 }
@@ -157,7 +153,7 @@ void get_sta_config(wifi_config_t *wifi_config)
     wifi_scan_config_t scan_config = {
         .ssid = NULL,
         .bssid = NULL,
-        .channel = 11,
+        .channel = 6,
         .show_hidden = false,
         .scan_type = WIFI_SCAN_TYPE_PASSIVE,
         .scan_time.passive = 100,
@@ -224,16 +220,15 @@ void start_wifi_event_handler()
                                                         &instance_got_ip));
 }
 
+// Pass -1 for infinite attempts
 int wait_for_connect(int attempts)
 {
     max_conn_attempts = attempts;
-    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
             WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
             pdFALSE,
             pdFALSE,
             portMAX_DELAY);
-    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
     max_conn_attempts = -1;
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI("CLIENT", "Connected to AP!");
@@ -242,4 +237,15 @@ int wait_for_connect(int attempts)
         ESP_LOGW("CLIENT", "Failed to connect to AP!");
         return -1;
     }
+}
+
+void clear_wifi_event_group()
+{
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_DISCONNECTED_BIT);
+}
+
+int is_disconnected()
+{
+    EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
+    return bits & WIFI_DISCONNECTED_BIT;
 }

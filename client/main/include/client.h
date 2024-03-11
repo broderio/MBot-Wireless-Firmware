@@ -39,8 +39,8 @@
 #define CAM_SDA_PIN                 3                   /**< GPIO Pin for I2C data line */
 #define CAM_SCL_PIN                 2                   /**< GPIO Pin for I2C clock line */
 
-#define RC_TX_PIN                   4 
-#define RC_RX_PIN                   5 
+#define RC_RX_PIN                   4 
+#define RC_TX_PIN                   5 
 
 #define LIDAR_TX_PIN                44                  /**< GPIO Pin for UART transmit line */
 #define LIDAR_RX_PIN                43                  /**< GPIO Pin for UART receive line */
