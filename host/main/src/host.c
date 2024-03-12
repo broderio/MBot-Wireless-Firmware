@@ -29,11 +29,11 @@
 #include "sockets.h"
 #include "led.h"
 #include "usb_device.h"
+#include "pairing.h"
 #include "serializer.h"
 #include "lcm_types.h"
 
 #include "host.h"
-#include "utils.h"
 
 #define MAX_EMPTY_READS 64
 #define BUFFER_SIZE 64
@@ -44,18 +44,22 @@ typedef struct connection_args_t
     uint8_t robot_id;
 } connection_args_t;
 
-static connection_args_t *connections[MAX_CONN];
+static connection_args_t *connections[AP_MAX_CONN];
+static int num_connections_socket = 0;
+
 
 server_socket_t server;
 
-QueueHandle_t usb_recv_queue[MAX_CONN];
+QueueHandle_t usb_recv_queue[AP_MAX_CONN];
 
 static EventGroupHandle_t control_mode_event_group;
 
 static uint8_t curr_robot_id = 0;
 
-static led_t *led;
-
+static led_t *led1;
+static led_t *led2;
+static button_t *pair_btn;
+static button_t *pilot_btn;
 static joystick_t *js;
 
 void connection_task(void *args)
@@ -163,7 +167,7 @@ void socket_task(void *args)
         connection_socket_t connection = socket_server_accept(server);
         if (connection > 0)
         {
-            if (num_connections_socket == MAX_CONN) {
+            if (num_connections_socket == AP_MAX_CONN) {
                 socket_connection_close(connection);
                 ESP_LOGI("HOST", "Max number of connections reached.");
                 goto delay;
@@ -171,7 +175,7 @@ void socket_task(void *args)
 
             ESP_LOGI("HOST", "Client connected.");
 
-            for (int i = 0; i < MAX_CONN; ++i) {
+            for (int i = 0; i < AP_MAX_CONN; ++i) {
                 if (connections[i] == NULL) {
                     connections[i] = malloc(sizeof(connection_args_t));
                     if (connections[i] == NULL) {
@@ -199,7 +203,7 @@ void socket_task(void *args)
 // Packet structure: [SYNC_FLAG, ROBOT_ID, MSG_LEN, [PACKET]]
 void usb_task(void *args)
 {
-    led_on(led);
+    led_on(led2);
     uint8_t trigger = 0x0;
     while (true)
     {
@@ -266,7 +270,7 @@ void usb_task(void *args)
 
 void pilot_task(void *args)
 {
-    led_off(led);
+    led_off(led2);
     serial_twist2D_t vel_cmd = {0};
     float vx_prev = 0.0, wz_prev = 0.0;
     while (true)
@@ -315,6 +319,50 @@ void pilot_task(void *args)
     }
 }
 
+pair_config_t pair_wifi() {
+    uint8_t ack_recv;
+    int bytes_read = 0;
+    while (!bytes_read) {
+        bytes_read = usb_device_read(&ack_recv, 1);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+
+    pair_config_t pair_cfg = get_pair_config();
+    
+    button_wait_for_press(pair_btn);
+    button_wait_for_release(pair_btn);
+
+    if (strlen(pair_cfg.ssid) >= 3 || strlen(pair_cfg.password) != 0) {
+        usb_device_send((uint8_t*)pair_cfg.ssid, sizeof(pair_cfg.ssid));
+    }
+
+    pair_config_t new_pair_cfg = {0};
+    uint8_t ack_send = 0xFF;
+    while (true) {
+        usb_device_send(&ack_send, 1);
+
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        
+        uint8_t buffer[sizeof(pair_config_t)];
+        usb_device_read(buffer, sizeof(pair_config_t));
+        memcpy(&new_pair_cfg, buffer, sizeof(pair_config_t));
+
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+
+        usb_device_send(buffer, sizeof(pair_config_t));
+
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        
+        usb_device_read(&ack_recv, 1);
+
+        if (ack_recv == 0xFF) {
+            break;
+        }
+    }
+    set_pair_config(&new_pair_cfg);
+    return new_pair_cfg;
+}
+
 void app_main(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -325,81 +373,51 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    for (int i = 0; i < MAX_CONN; i++)
+    for (int i = 0; i < AP_MAX_CONN; i++)
     {
         usb_recv_queue[i] = xQueueCreate(32, sizeof(packet_t));
     }
 
     control_mode_event_group = xEventGroupCreate();
 
-    usb_device_init();
+    usb_device_init(); 
 
     js = joystick_create(JOYSTICK_X_PIN, JOYSTICK_Y_PIN);
 
-    led = led_create(LED2_PIN);
+    led1 = led_create(LED1_PIN);
+    led2 = led_create(LED2_PIN);
 
-    button_t *pair_button = button_create(PAIR_PIN);
-    button_interrupt_enable(pair_button);
+    pair_btn = button_create(PAIR_PIN);
+    button_interrupt_enable(pair_btn);
 
-    button_t *pilot_button = button_create(PILOT_PIN);
-    button_interrupt_enable(pilot_button);
+    pilot_btn = button_create(PILOT_PIN);
+    button_interrupt_enable(pilot_btn);
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    wifi_init_config_t *wifi_cfg = wifi_start();
 
     int pairing_mode = 0;
-    if (button_is_pressed(pair_button))
+    if (button_is_pressed(pair_btn))
     {
         ESP_LOGI("HOST", "Pair button is pressed. Going into pairing mode.");
         pairing_mode = 1;
-        button_wait_for_release(pair_button);
+        button_wait_for_release(pair_btn);
     }
 
-    // Init Wi-Fi
-    ESP_LOGI("HOST", "Initializing Wi-Fi");
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    if (pairing_mode)
-    {
-        led_blink(led, 500);
-        wifi_config_t wifi_sta_config;
-        init_sta(&wifi_sta_config);
-        wait_for_no_hosts();
+    pair_config_t pair_cfg = {0};
+    if (pairing_mode) {
+        led_blink(led1, 500);
+        pair_cfg = pair_wifi();
+        led_stop_blink(led1);
+    }
+    else {
+        pair_cfg = get_pair_config();
     }
 
-    // Init AP config
-    wifi_config_t wifi_ap_config;
-    if (!pairing_mode)
-    {
-        wifi_ap_config.ap.ssid_hidden = 1;
-    }
-    init_ap(&wifi_ap_config);
+    ESP_LOGI("HOST", "Pairing config: SSID: %s, Password: %s", pair_cfg.ssid, pair_cfg.password);
 
-    // Once the MBotWireless AP is started, wait for a client to connect to the AP and the socket
-    if (pairing_mode)
-    {
-        led_on(led);
-        ESP_LOGI("HOST", "Press the pair button once all clients are connected.");
-        button_wait_for_press(pair_button);
+    wifi_config_t *wifi_ap_cfg = access_point_init(pair_cfg.ssid, pair_cfg.password, AP_CHANNEL, AP_IS_HIDDEN, AP_MAX_CONN);
 
-        if (num_connections_ap == 0)
-        {
-            ESP_LOGW("HOST", "Warning! No clients connected.");
-        }
-
-        wifi_ap_config.ap.ssid_hidden = 1;
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_ap_config));
-    }
-
-    server = socket_server_init(8000);
-
-    if (pairing_mode)
-    {
-        ESP_LOGI("HOST", "Press the pair button to start the tasks.");
-        button_wait_for_press(pair_button);
-    }
-    led_off(led);
+    server = socket_server_init(AP_PORT);
 
     xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 5, NULL);
     xTaskCreate(socket_task, "socket_task", 4096, NULL, 4, NULL);
@@ -407,7 +425,8 @@ void app_main(void)
     int state = 0;
     while (true)
     {
-        button_wait_for_press(pilot_button);
+        button_wait_for_press(pilot_btn);
+        button_wait_for_release(pilot_btn);
         if (state == 0) {
             xEventGroupSetBits(control_mode_event_group, PILOT_STOP);
             xEventGroupWaitBits(control_mode_event_group, PILOT_CONFIRM, pdTRUE, pdTRUE, portMAX_DELAY);

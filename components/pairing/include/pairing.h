@@ -40,14 +40,41 @@
             .password = "I<3robots" \
         }
 
+/**
+ * @brief Structure representing the configuration for pairing.
+ */
 typedef struct pair_config_t {
-    char ssid[9]; /*< Maximum unique name is 8 characters + null terminator */
-    char password[16];
+    char ssid[9]; /**< Maximum unique name is 8 characters + null terminator */
+    char password[16]; /**< Password for the Wi-Fi network */
 } pair_config_t;
 
+/**
+ * @brief Retrieves the pair configuration.
+ *
+ * @return The pair configuration.
+ */
 pair_config_t get_pair_config();
 
+/**
+ * @brief Sets the pair configuration.
+ *
+ * @param pair_cfg The pair configuration to set.
+ */
 void set_pair_config(pair_config_t *pair_cfg);
+
+/**
+ * @brief Initializes the Wi-Fi module.
+ *
+ * @return The initialized Wi-Fi configuration.
+ */
+wifi_init_config_t* wifi_start();
+
+/**
+ * @brief Deinitializes the Wi-Fi module.
+ *
+ * @param wifi_cfg The Wi-Fi configuration to deinitialize.
+ */
+void wifi_sop(wifi_init_config_t* wifi_cfg);
 
 /**
  * @brief Initializes ESP WiFi into station mode.
@@ -98,6 +125,16 @@ void station_free_scan(wifi_ap_record_t *ap_records);
 void station_connect(wifi_config_t *wifi_sta_cfg, const char *ssid, const char *password);
 
 /**
+ * @brief Waits for the station to establish a connection within the specified timeout.
+ *
+ * This function blocks until the station successfully connects to an access point or the specified timeout is reached.
+ *
+ * @param timeout_ms The timeout value in milliseconds. (-1 for blocking indefinitely)
+ */
+
+uint8_t station_wait_for_connection(int32_t timeout_ms);
+
+/**
  * @brief Disconnects from a WiFi access point.
  */
 void station_disconnect();
@@ -134,10 +171,12 @@ uint8_t station_connection_failed();
  * @brief Initializes ESP WiFi into access point mode.
  * @param ssid The SSID of the access point.
  * @param password The password of the access point.
+ * @param channel The channel of the access point.
  * @param hidden A flag indicating whether to hide the SSID of the access point.
+ * @param max_connections The maximum number of connections to the access point.
  * @return A pointer to the wifi_config_t structure containing the access point configuration.
  */
-wifi_config_t* access_point_init(const char *ssid, const char *password, uint8_t channel, uint8_t hidden);
+wifi_config_t* access_point_init(const char *ssid, const char *password, uint8_t channel, uint8_t hidden, uint8_t max_connections);
 
 /**
  * @brief Hides the SSID of the access point.

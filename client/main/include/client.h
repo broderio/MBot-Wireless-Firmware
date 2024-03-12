@@ -46,7 +46,11 @@
 #define LIDAR_RX_PIN                43                  /**< GPIO Pin for UART receive line */
 #define LIDAR_PWM_PIN               1                   /**< GPIO Pin for LIDAR PWM signal */
 
-#define PAIR_PIN                17
+#define PAIR_PIN                    17
+
+#define AP_CHANNEL                  11
+#define AP_IP_ADDR                  "192.168.4.2"
+#define AP_PORT                     8000
 
 typedef enum {
     CONNECT = BIT0,

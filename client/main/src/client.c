@@ -26,8 +26,10 @@
 #include "lcm_types.h"
 #include "lidar.h"
 #include "camera.h"
+#include "usb_device.h"
+#include "pairing.h"
+
 #include "client.h"
-#include "utils.h"
 
 static QueueHandle_t message_queue;
 
@@ -38,6 +40,8 @@ static EventGroupHandle_t camera_event_group;
 static SemaphoreHandle_t lidar_sem;
 
 static uint16_t ranges[360];
+
+static button_t *pair_btn;
 
 client_socket_t client;
  uart_t uart;
@@ -454,6 +458,50 @@ void heartbeat_task(void *args)
     }
 }
 
+pair_config_t pair_wifi() {
+    uint8_t ack_recv;
+    int bytes_read = 0;
+    while (!bytes_read) {
+        bytes_read = usb_device_read(&ack_recv, 1);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+
+    pair_config_t pair_cfg = get_pair_config();
+    
+    button_wait_for_press(pair_btn);
+    button_wait_for_release(pair_btn);
+
+    if (strlen(pair_cfg.ssid) >= 3 || strlen(pair_cfg.password) != 0) {
+        usb_device_send((uint8_t*)pair_cfg.ssid, sizeof(pair_cfg.ssid));
+    }
+
+    pair_config_t new_pair_cfg = {0};
+    uint8_t ack_send = 0xFF;
+    while (true) {
+        usb_device_send(&ack_send, 1);
+
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        
+        uint8_t buffer[sizeof(pair_config_t)];
+        usb_device_read(buffer, sizeof(pair_config_t));
+        memcpy(&new_pair_cfg, buffer, sizeof(pair_config_t));
+
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+
+        usb_device_send(buffer, sizeof(pair_config_t));
+
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        
+        usb_device_read(&ack_recv, 1);
+
+        if (ack_recv == 0xFF) {
+            break;
+        }
+    }
+    set_pair_config(&new_pair_cfg);
+    return new_pair_cfg;
+}
+
 void app_main(void)
 {
     // Init
@@ -465,79 +513,45 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    utils_init();
     tasks_init();
+
+    // usb_device_init();
 
     uart = UART_NUM_1;
     uart_init(uart, RC_TX_PIN, RC_RX_PIN, 115200, 1024);
 
-    button_t *pair_button = button_create(PAIR_PIN);
-    button_interrupt_enable(pair_button);
+    pair_btn = button_create(PAIR_PIN);
+    button_interrupt_enable(pair_btn);
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    wifi_init_config_t *wifi_cfg = wifi_start();
 
-    int was_paired = 0;
-    char paired_ssid[SSID_LEN];
-    if (find_paired_ssid(paired_ssid) == 0)
+    int pairing_mode = 0;
+    if (button_is_pressed(pair_btn))
     {
-        was_paired = 1;
+        ESP_LOGI("CLIENT", "Pair button is pressed. Going into pairing mode.");
+        pairing_mode = 1;
+        button_wait_for_release(pair_btn);
     }
 
-    // Init Wi-Fi in STA mode
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-
-    int connected = 0;
-    while (!connected)
-    {
-        wifi_config_t wifi_sta_config;
-        if (!was_paired)
-        {
-            get_sta_config(&wifi_sta_config);
-            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_sta_config));
-            // First pairing to connect to public broadcast of AP
-            button_wait_for_press(pair_button);
-
-            start_wifi_event_handler();
-            esp_wifi_start();
-            wait_for_connect(5);
-            clear_wifi_event_group();
-
-            // Second pair to connect to private broadcast of AP
-            button_wait_for_press(pair_button);
-
-            esp_wifi_disconnect();
-            wait_for_connect(5);
-            clear_wifi_event_group();
-            set_paired_ssid((char *)wifi_sta_config.sta.ssid);
-            connected = 1;
-        }
-        else
-        {
-            set_sta_config(&wifi_sta_config, paired_ssid);
-            start_wifi_event_handler();
-            esp_wifi_start();
-            int timeout = wait_for_connect(5);
-            clear_wifi_event_group();
-            if (timeout < 0)
-            {
-                ESP_LOGE("CLIENT", "Failed to connect to AP. Starting pairing protocol...");
-                was_paired = 0;
-            }
-            else
-            {
-                connected = 1;
-            }
-        }
+    pair_config_t pair_cfg = {0};
+    if (pairing_mode) {
+        pair_cfg = pair_wifi();
+    }
+    else {
+        pair_cfg = get_pair_config();
     }
 
-    client = socket_client_init(MBOT_HOST_IP_ADDR, 8000);
+    ESP_LOGI("CLIENT", "Pairing config: %s, %s", pair_cfg.ssid, pair_cfg.password);
+
+    wifi_config_t *wifi_sta_cfg = station_init();
+    station_connect(wifi_sta_cfg, pair_cfg.ssid, pair_cfg.password);
+    station_wait_for_connection(-1);
+
+    client = socket_client_init(AP_IP_ADDR, AP_PORT);
     while (client < 0)
     {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
-        client = socket_client_init(MBOT_HOST_IP_ADDR, 8000);
+        client = socket_client_init(AP_IP_ADDR, AP_PORT);
     }
 
     TaskHandle_t sender_task_handle, lidar_task_handle, lidar_read_task_handle, socket_task_handle, mbot_task_handle, heartbeat_task_handle;
@@ -554,7 +568,7 @@ void app_main(void)
     xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 4, &heartbeat_task_handle);
 
     while (true) {
-        if (is_disconnected()) {
+        if (station_is_disconnected()) {
             ESP_LOGW("CLIENT", "Disconnected from AP. Attempting to reconnect...");
             xEventGroupSetBits(connection_event_group, DISCONNECT);
             vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -571,15 +585,15 @@ void app_main(void)
 
             xEventGroupClearBits(connection_event_group, DISCONNECT);
 
-            wait_for_connect(-1);
-            clear_wifi_event_group();
+            station_wait_for_connection(-1);
+
             socket_client_close(client);
 
-            client = socket_client_init(MBOT_HOST_IP_ADDR, 8000);
+            client = socket_client_init(AP_IP_ADDR, AP_PORT);
             while (client < 0)
             {
                 vTaskDelay(1000 / portTICK_PERIOD_MS);
-                client = socket_client_init(MBOT_HOST_IP_ADDR, 8000);
+                client = socket_client_init(AP_IP_ADDR, AP_PORT);
             }
 
             sender_args->client = &client;

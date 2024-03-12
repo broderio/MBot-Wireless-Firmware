@@ -60,7 +60,7 @@ connection_socket_t socket_server_accept(server_socket_t server)
             ESP_LOGV(SOCKET_TAG, "No pending connections...");
             return -2;
         }
-        ESP_LOGE(SOCKET_TAG, "Unable to accept connection: errno %d", errno);
+        ESP_LOGE(SOCKET_TAG, "Unable to accept connection: errno %s", esp_err_to_name(errno));
         close(sock);
         return -1;
     }

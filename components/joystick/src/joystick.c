@@ -27,7 +27,37 @@ typedef struct joystick_t {
     uint8_t _is_calibrated;
 } joystick_t;
 
-joystick_t *joystick_create(uint8_t x_pin, uint8_t y_pin, joystick_config_t *cfg) {
+uint8_t _get_joystick_cfg(joystick_config_t *cfg, const char* cfg_name) {
+    joystick_config_t default_cfg = DEFAULT_JOYSTICK_CONFIG;
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW("JOYSTICK", "Error (%s) opening NVS handle!", esp_err_to_name(err));
+        memcpy(cfg, &default_cfg, sizeof(joystick_config_t));
+        return 0;
+    }
+
+    size_t len = sizeof(joystick_config_t);
+    err = nvs_get_blob(nvs, cfg_name, cfg, &len);
+    switch (err) { 
+        case ESP_OK:
+            ESP_LOGI("JOYSTICK", "Found joystick configuration");
+            nvs_close(nvs);
+            return 1;
+        case ESP_ERR_NVS_NOT_FOUND:
+            ESP_LOGW("JOYSTICK", "No configuration found, using default");
+            break;
+        default:
+            ESP_LOGE("JOYSTICK", "Error (%s) reading!", esp_err_to_name(err));
+            break;
+    }
+    nvs_close(nvs);
+    memcpy(cfg, &default_cfg, sizeof(joystick_config_t));
+    return 0;
+}
+
+joystick_t *joystick_create(uint8_t x_pin, uint8_t y_pin) {
     joystick_t *js = (joystick_t*)malloc(sizeof(joystick_t));
     if (js == NULL) {
         ESP_LOGE("JOYSTICK", "Failed to allocate memory for joystick configuration");
@@ -38,7 +68,8 @@ joystick_t *joystick_create(uint8_t x_pin, uint8_t y_pin, joystick_config_t *cfg
     js->x_pin = x_pin;
     js->y_pin = y_pin;
     js->_deadband = 0.05;
-    memcpy(&js->cfg, cfg, sizeof(joystick_config_t));
+
+    js->_is_calibrated = _get_joystick_cfg(&js->cfg, DEFAULT_JS_CFG_NAME);
 
     adc_oneshot_io_to_channel(js->x_pin, &js->x_unit, &js->x_channel);
     adc_oneshot_unit_init_cfg_t unit_cfg ={
@@ -139,43 +170,6 @@ float joystick_get_y(joystick_t *js) {
 
 uint8_t joystick_is_calibrated(joystick_t *js) {
     return js->_is_calibrated;
-}
-
-joystick_config_t joystick_get_config(joystick_t *js, const char *cfg_name) {
-
-    if (js->_is_calibrated) {
-        return js->cfg;
-    }
-
-    joystick_config_t default_cfg = DEFAULT_JOYSTICK_CONFIG;
-    js->_is_calibrated = 0;
-
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        ESP_LOGW("JOYSTICK", "Error (%s) opening NVS handle!", esp_err_to_name(err));
-        memcpy(&js->cfg, &default_cfg, sizeof(joystick_config_t));
-        return js->cfg;
-    }
-
-    size_t len = sizeof(joystick_config_t);
-    err = nvs_get_blob(nvs, cfg_name, &js->cfg, &len);
-    switch (err) { 
-        case ESP_OK:
-            ESP_LOGI("JOYSTICK", "Found joystick configuration");
-            js->_is_calibrated = 1;
-            break;
-        case ESP_ERR_NVS_NOT_FOUND:
-            ESP_LOGW("JOYSTICK", "No configuration found, using default");
-            memcpy(&js->cfg, &default_cfg, sizeof(joystick_config_t));
-            break;
-        default:
-            ESP_LOGE("JOYSTICK", "Error (%s) reading!", esp_err_to_name(err));
-            memcpy(&js->cfg, &default_cfg, sizeof(joystick_config_t));
-            break;
-    }
-    nvs_close(nvs);
-    return js->cfg;
 }
 
 void joystick_write_cfg(joystick_config_t *cfg, const char *cfg_name) {

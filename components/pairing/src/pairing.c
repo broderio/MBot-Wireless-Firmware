@@ -25,8 +25,6 @@
 
 #include "pairing.h"
 
-#define AP_MAX_CONNECTIONS 3
-
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_DISCONNECTED_BIT  BIT1
 #define WIFI_FAIL_BIT  BIT2
@@ -68,6 +66,7 @@ void _sta_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id
     {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI("CLIENT", "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+        station_connected = 1;
         conn_attempts = 0;
     }
 }
@@ -167,18 +166,21 @@ void _ap_set_static_ip(esp_netif_t *netif, const char *static_ip, const char* st
 }
 
 pair_config_t get_pair_config() {
+    pair_config_t default_cfg = DEFAULT_PAIR_CFG;
     pair_config_t pair_cfg = {0};
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGE("PAIRING", "Failed to open NVS handle. Error: %s", esp_err_to_name(err));
-        
+        return default_cfg;
     }
 
     size_t len = sizeof(pair_config_t);
     err = nvs_get_blob(nvs_handle, "pair_cfg", &pair_cfg, &len);
     if (err != ESP_OK) {
         ESP_LOGE("PAIRING", "Failed to read ssid from NVS. Error: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return default_cfg;
     }
 
     nvs_close(nvs_handle);
@@ -199,6 +201,43 @@ void set_pair_config(pair_config_t *pair_cfg) {
     }
 
     nvs_close(nvs);
+}
+
+wifi_init_config_t *wifi_start() {
+    wifi_init_config_t *wifi_cfg = (wifi_init_config_t *)malloc(sizeof(wifi_init_config_t));
+    if (wifi_cfg == NULL) {
+        ESP_LOGE("PAIRING", "Failed to allocate memory for wifi init config");
+        return NULL;
+    }
+
+    esp_err_t err = esp_netif_init();
+    if (err != ESP_OK) {
+        ESP_LOGE("PAIRING", "Failed to initialize netif. Error: %s", esp_err_to_name(err));
+        free(wifi_cfg);
+        return NULL;
+    }
+
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK) {
+        ESP_LOGE("PAIRING", "Failed to create event loop. Error: %s", esp_err_to_name(err));
+        free(wifi_cfg);
+        return NULL;
+    }
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE("PAIRING", "Failed to initialize wifi. Error: %s", esp_err_to_name(err));
+        free(wifi_cfg);
+        return NULL;
+    }
+    return wifi_cfg;
+}
+
+void wifi_stop(wifi_init_config_t *wifi_cfg) {
+    esp_wifi_stop();
+    esp_wifi_deinit();
+    free(wifi_cfg);
 }
 
 wifi_config_t* station_init()
@@ -229,7 +268,7 @@ wifi_config_t* station_init()
     }
 
     cfg->sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    cfg->sta.threshold.authmode = WIFI_AUTH_OPEN;
+    cfg->sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     cfg->sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
     esp_wifi_set_config(WIFI_IF_STA, cfg);
     in_station_mode = 1;
@@ -293,7 +332,7 @@ wifi_ap_record_t *station_scan(wifi_config_t* wifi_sta_cfg, uint16_t* num_ap_rec
         .bssid = NULL,
         .channel = 0,
         .show_hidden = show_hidden,
-        .scan_type = WIFI_SCAN_TYPE_PASSIVE,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
         .scan_time.passive = 100,
     };
     esp_wifi_scan_start(&scan_cfg, true);
@@ -329,12 +368,36 @@ void station_connect(wifi_config_t *wifi_sta_cfg, const char *ssid, const char *
 
     strcpy((char*)wifi_sta_cfg->sta.ssid, ssid);
     strcpy((char*)wifi_sta_cfg->sta.password, password);
+
+    ESP_LOGI("PAIRING", "Attempting to connect to %s with password %s", wifi_sta_cfg->sta.ssid, wifi_sta_cfg->sta.password);
+
     esp_wifi_set_config(WIFI_IF_STA, wifi_sta_cfg);
 
     esp_wifi_start();
     _start_sta_event_handler();
     esp_wifi_connect();
-    station_connected = 1;
+}
+
+uint8_t station_wait_for_connection(int32_t timeout_ms)
+{
+    if (!in_station_mode) {
+        ESP_LOGE("PAIRING", "Station is not initialized");
+        return 0;
+    }
+
+    if (station_connected) {
+        ESP_LOGI("PAIRING", "Station is already connected");
+        return 1;
+    }
+
+    TickType_t ticks_elapsed = 0;
+    TickType_t ticks_to_wait;
+    ticks_to_wait = (timeout_ms < 0) ? portMAX_DELAY : (timeout_ms / portTICK_PERIOD_MS);
+    while (ticks_elapsed < ticks_to_wait && !station_connected) {
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        ticks_elapsed += 100 / portTICK_PERIOD_MS;
+    } 
+    return station_connected;
 }
 
 void station_disconnect()
@@ -371,7 +434,7 @@ uint8_t station_connection_failed() {
     return !station_connected && !station_connecting;
 }
 
-wifi_config_t* access_point_init(const char *ssid, const char *password, uint8_t channel, uint8_t hidden)
+wifi_config_t* access_point_init(const char *ssid, const char *password, uint8_t channel, uint8_t hidden, uint8_t max_connections)
 {
     if (in_station_mode) {
         ESP_LOGE("PAIRING", "Device is in station mode. Deinit the station before initializing as access point.");
@@ -397,11 +460,13 @@ wifi_config_t* access_point_init(const char *ssid, const char *password, uint8_t
     }
     wifi_ap_cfg->ap.channel = channel;
     wifi_ap_cfg->ap.authmode = WIFI_AUTH_WPA2_PSK;
-    wifi_ap_cfg->ap.max_connection = AP_MAX_CONNECTIONS;
+    wifi_ap_cfg->ap.max_connection = max_connections;
     wifi_ap_cfg->ap.beacon_interval = 100;
     strcpy((char*)wifi_ap_cfg->ap.ssid, ssid);
+    wifi_ap_cfg->ap.ssid_len = strlen(ssid);
     strcpy((char*)wifi_ap_cfg->ap.password, password);
     wifi_ap_cfg->ap.ssid_hidden = hidden;
+    wifi_ap_cfg->ap.pmf_cfg.required = 0;
     access_point_hidden = hidden;
     
     esp_wifi_set_config(WIFI_IF_AP, wifi_ap_cfg);

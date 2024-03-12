@@ -48,7 +48,7 @@ typedef struct joystick_t joystick_t;
  * @param cfg A pointer to the joystick configuration object.
  * @return A pointer to the created joystick object.
  */
-joystick_t *joystick_create(uint8_t x_pin, uint8_t y_pin, joystick_config_t *cfg);
+joystick_t *joystick_create(uint8_t x_pin, uint8_t y_pin);
 
 /**
  * @brief Frees the memory allocated for a joystick object.
@@ -111,15 +111,6 @@ float joystick_get_y(joystick_t *js);
  * @return 1 if calibrated, 0 otherwise.
  */
 uint8_t joystick_is_calibrated(joystick_t *js);
-
-/**
- * @brief Gets the configuration of the joystick.
- *
- * @param js A pointer to the joystick object.
- * @param cfg_name The name of the configuration to be retrieved.
- * @return The configuration of the joystick.
- */
-joystick_config_t joystick_get_config(joystick_t *js, const char *cfg_name);
 
 /**
  * @brief Writes the configuration of the joystick.
