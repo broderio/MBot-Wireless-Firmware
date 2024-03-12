@@ -12,7 +12,7 @@
 #define BTN_PIN 17
 #define LED_PIN 15
 
-#define TAG "JOYSTICK_TEST"
+#define TAG "CONFIGURATION"
 
 void app_main(void)
 {
@@ -24,11 +24,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    joystick_t *js = joystick_create(JS_X_PIN, JS_Y_PIN);
-    if (js == NULL) {
-        ESP_LOGE("JOYSTICK", "Failed to create joystick");
-        return;
-    }
+    usb_device_init();
 
     button_t *btn = button_create(BTN_PIN);
     if (btn == NULL) {
@@ -43,10 +39,16 @@ void app_main(void)
         return;
     }
     led_on(led);
+
+    joystick_t *js = joystick_create(JS_X_PIN, JS_Y_PIN);
+    if (js == NULL) {
+        ESP_LOGE("JOYSTICK", "Failed to create joystick");
+        return;
+    }
     
+    joystick_config_t cfg = joystick_get_config(js, DEFAULT_JS_CFG_NAME);
     if (joystick_is_calibrated(js)) {
         ESP_LOGI(TAG, "Joystick is already calibrated.");
-        joystick_config_t cfg = joystick_get_config(js);
         ESP_LOGI(TAG, "x_max: %ld, x_min: %ld, x_rest: %ld, y_max: %ld, y_min: %ld, y_rest: %ld", cfg.x_max, cfg.x_min, cfg.x_rest, cfg.y_max, cfg.y_min, cfg.y_rest);
         ESP_LOGI(TAG, "Press the button to recalibrate the joystick");
     }
@@ -99,7 +101,7 @@ void app_main(void)
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 
-    joystick_write_cfg(&js_cfg);
+    joystick_write_cfg(&js_cfg, DEFAULT_JS_CFG_NAME);
     ESP_LOGI(TAG, "Calibration complete! Press the button to see the joystick values");
 
     // Wait for button press to start reading joystick values

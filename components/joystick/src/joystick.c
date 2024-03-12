@@ -27,16 +27,18 @@ typedef struct joystick_t {
     uint8_t _is_calibrated;
 } joystick_t;
 
-joystick_t *joystick_create(uint8_t x_pin, uint8_t y_pin) {
+joystick_t *joystick_create(uint8_t x_pin, uint8_t y_pin, joystick_config_t *cfg) {
     joystick_t *js = (joystick_t*)malloc(sizeof(joystick_t));
     if (js == NULL) {
         ESP_LOGE("JOYSTICK", "Failed to allocate memory for joystick configuration");
         return NULL;
     }
     memset(js, 0, sizeof(joystick_t));
+
     js->x_pin = x_pin;
     js->y_pin = y_pin;
     js->_deadband = 0.05;
+    memcpy(&js->cfg, cfg, sizeof(joystick_config_t));
 
     adc_oneshot_io_to_channel(js->x_pin, &js->x_unit, &js->x_channel);
     adc_oneshot_unit_init_cfg_t unit_cfg ={
@@ -60,34 +62,6 @@ joystick_t *joystick_create(uint8_t x_pin, uint8_t y_pin) {
     ESP_ERROR_CHECK(adc_oneshot_config_channel(js->x_adc_handle, js->x_channel, &adc_config));
     ESP_ERROR_CHECK(adc_oneshot_config_channel(js->y_adc_handle, js->y_channel, &adc_config));
 
-    joystick_config_t default_cfg = DEFAULT_JOYSTICK_CONFIG;
-    js->_is_calibrated = 0;
-
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        ESP_LOGW("JOYSTICK", "Error (%s) opening NVS handle!", esp_err_to_name(err));
-        memcpy(&js->cfg, &default_cfg, sizeof(joystick_config_t));
-        return js;
-    }
-
-    size_t len = sizeof(joystick_config_t);
-    err = nvs_get_blob(nvs, "js_cfg", &js->cfg, &len);
-    switch (err) { 
-        case ESP_OK:
-            ESP_LOGI("JOYSTICK", "Found joystick configuration");
-            js->_is_calibrated = 1;
-            break;
-        case ESP_ERR_NVS_NOT_FOUND:
-            ESP_LOGW("JOYSTICK", "No configuration found, using default");
-            memcpy(&js->cfg, &default_cfg, sizeof(joystick_config_t));
-            break;
-        default:
-            ESP_LOGE("JOYSTICK", "Error (%s) reading!", esp_err_to_name(err));
-            memcpy(&js->cfg, &default_cfg, sizeof(joystick_config_t));
-            break;
-    }
-    nvs_close(nvs);
     return js;
 }
 
@@ -167,11 +141,44 @@ uint8_t joystick_is_calibrated(joystick_t *js) {
     return js->_is_calibrated;
 }
 
-joystick_config_t joystick_get_config(joystick_t *js) {
+joystick_config_t joystick_get_config(joystick_t *js, const char *cfg_name) {
+
+    if (js->_is_calibrated) {
+        return js->cfg;
+    }
+
+    joystick_config_t default_cfg = DEFAULT_JOYSTICK_CONFIG;
+    js->_is_calibrated = 0;
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW("JOYSTICK", "Error (%s) opening NVS handle!", esp_err_to_name(err));
+        memcpy(&js->cfg, &default_cfg, sizeof(joystick_config_t));
+        return js->cfg;
+    }
+
+    size_t len = sizeof(joystick_config_t);
+    err = nvs_get_blob(nvs, cfg_name, &js->cfg, &len);
+    switch (err) { 
+        case ESP_OK:
+            ESP_LOGI("JOYSTICK", "Found joystick configuration");
+            js->_is_calibrated = 1;
+            break;
+        case ESP_ERR_NVS_NOT_FOUND:
+            ESP_LOGW("JOYSTICK", "No configuration found, using default");
+            memcpy(&js->cfg, &default_cfg, sizeof(joystick_config_t));
+            break;
+        default:
+            ESP_LOGE("JOYSTICK", "Error (%s) reading!", esp_err_to_name(err));
+            memcpy(&js->cfg, &default_cfg, sizeof(joystick_config_t));
+            break;
+    }
+    nvs_close(nvs);
     return js->cfg;
 }
 
-void joystick_write_cfg(joystick_config_t *cfg) {
+void joystick_write_cfg(joystick_config_t *cfg, const char *cfg_name) {
     nvs_handle_t nvs;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
@@ -179,7 +186,7 @@ void joystick_write_cfg(joystick_config_t *cfg) {
         return;
     }
 
-    err = nvs_set_blob(nvs, "js_cfg", cfg, sizeof(joystick_config_t));
+    err = nvs_set_blob(nvs, cfg_name, cfg, sizeof(joystick_config_t));
     if (err != ESP_OK) {
         ESP_LOGE("JOYSTICK", "Error (%s) writing!", esp_err_to_name(err));
     }
