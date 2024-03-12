@@ -56,6 +56,8 @@ static uint8_t curr_robot_id = 0;
 
 static led_t *led;
 
+static joystick_t *js;
+
 void connection_task(void *args)
 {
     if (args == NULL)
@@ -277,11 +279,9 @@ void pilot_task(void *args)
         }
 
         vel_cmd.utime = esp_timer_get_time();
-        float vx, wz;
-        joystick_get_output(&wz, &vx);
-
-        if (fabs(vx) < 0.05) vx = 0;
-        if (fabs(wz) < 0.05) wz = 0;
+        joystick_read(js);
+        float vx = joystick_get_y(js);
+        float wz = joystick_get_x(js);
 
         if (vx == vx_prev && wz == wz_prev)
         {
@@ -332,21 +332,9 @@ void app_main(void)
 
     control_mode_event_group = xEventGroupCreate();
 
-    // usb_device_init();
+    usb_device_init();
 
-    joystick_config_t js_config = {
-        .x_pin = 5,
-        .y_pin = 4,
-        .x_in_max = 916,
-        .x_in_min = 22,
-        .x_out_max = 1,
-        .x_out_min = -1,
-        .y_in_max = 907,
-        .y_in_min = 0,
-        .y_out_max = 1,
-        .y_out_min = -1,
-    };
-    joystick_init(&js_config);
+    js = joystick_create(JOYSTICK_X_PIN, JOYSTICK_Y_PIN);
 
     led = led_create(LED2_PIN);
 
