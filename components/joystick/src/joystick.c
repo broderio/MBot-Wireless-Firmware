@@ -11,7 +11,7 @@
 
 #include "joystick.h"
 
-typedef struct joystick_t {
+struct joystick_t {
     uint8_t x_pin;
     uint8_t y_pin;
     int32_t x_raw;
@@ -25,7 +25,7 @@ typedef struct joystick_t {
     adc_unit_t y_unit;
     joystick_config_t cfg;
     uint8_t _is_calibrated;
-} joystick_t;
+};
 
 uint8_t _get_joystick_cfg(joystick_config_t *cfg, const char* cfg_name) {
     joystick_config_t default_cfg = DEFAULT_JOYSTICK_CONFIG;

@@ -195,7 +195,7 @@ def main():
     ax = fig.add_subplot(111, projection='polar', frame_on=False)  # Remove the frame
     
     ax.grid(False)  # Remove the grid
-    ax.set_rmax(8)
+    ax.set_rmax(4)
     ax.set_xticklabels([])  # Remove the labels on the radius
     ax.set_yticklabels([])  # Remove the labels on the radius
     ax.set_rticks([])  # Remove the ticks on the radius
@@ -203,7 +203,6 @@ def main():
     angles = np.array([np.radians(x) for x in range(360)])[::-1]
     lines = LineCollection([], colors='#FFCB05', linewidths=0.5)  # Initialize an empty LineCollection with thinner lines
     ax.add_collection(lines)  # Add the LineCollection to the plot
-
     obstacle_line, = ax.plot([], [], color='#00274C')
 
     line_segments = np.zeros((360, 2, 2))

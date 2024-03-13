@@ -250,9 +250,8 @@ void lidar_read_task(void *args) {
     ESP_LOGI("LIDAR_TASK", "Starting lidar task");
     while (1)
     {
-        lidar_t lidar;
-        int error = lidar_init(&lidar, LIDAR_TX_PIN, LIDAR_RX_PIN, LIDAR_PWM_PIN);
-        if (error != 0)
+        lidar_t *lidar = lidar_create(UART_NUM_0, LIDAR_TX_PIN, LIDAR_RX_PIN, LIDAR_PWM_PIN);
+        if (lidar == NULL)
         {
             ESP_LOGE("LIDAR_TASK", "Error initializing lidar");
             xEventGroupSetBits(lidar_event_group, LIDAR_INIT);
@@ -261,12 +260,20 @@ void lidar_read_task(void *args) {
         }
 
         start:
-        error = lidar_start_exp_scan(&lidar);
-        if (error != 0)
+        uint8_t error = lidar_start_motor(lidar, LIDAR_DEFAULT_MOTOR_PWM);
+        if (error)
+        {
+            ESP_LOGE("LIDAR_TASK", "Error starting motor");
+            lidar_free(lidar);
+            continue;
+        }
+
+        error = lidar_start_scan(lidar, SCAN_TYPE_EXPRESS);
+        if (error)
         {
             ESP_LOGE("LIDAR_TASK", "Error starting scan");
             xEventGroupSetBits(lidar_event_group, LIDAR_START_SCAN);
-            lidar_deinit(&lidar);
+            lidar_free(lidar);
             continue;
         }
 
@@ -274,21 +281,21 @@ void lidar_read_task(void *args) {
         {
             if (xEventGroupGetBits(connection_event_group) & DISCONNECT)
             {
-                lidar_stop_scan(&lidar);
-                lidar_deinit(&lidar);
+                lidar_stop_scan(lidar);
+                lidar_free(lidar);
                 ESP_LOGI("LIDAR_READ_TASK", "Waiting for reconnection.");
                 vTaskDelete(NULL);
             }
 
             xSemaphoreTake(lidar_sem, portMAX_DELAY);
-            error = lidar_get_exp_scan_360(&lidar, ranges);
+            error = lidar_get_scan_360(lidar, ranges);
             xSemaphoreGive(lidar_sem);
 
             if (error != 0)
             {
                 ESP_LOGE("LIDAR_TASK", "Error getting scan");
-                lidar_stop_scan(&lidar);
-                lidar_reset(&lidar);
+                lidar_stop_scan(lidar);
+                lidar_reset(lidar);
                 goto start;
             }
         }
@@ -515,7 +522,7 @@ void app_main(void)
 
     tasks_init();
 
-    usb_device_init();
+    // usb_device_init();
 
     uart = UART_NUM_1;
     uart_init(uart, RC_TX_PIN, RC_RX_PIN, 115200, 1024);
