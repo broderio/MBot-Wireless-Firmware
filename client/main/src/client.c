@@ -515,7 +515,7 @@ void app_main(void)
 
     tasks_init();
 
-    // usb_device_init();
+    usb_device_init();
 
     uart = UART_NUM_1;
     uart_init(uart, RC_TX_PIN, RC_RX_PIN, 115200, 1024);

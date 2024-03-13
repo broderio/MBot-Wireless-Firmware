@@ -47,6 +47,7 @@ typedef struct connection_args_t
 static connection_args_t *connections[AP_MAX_CONN];
 static int num_connections_socket = 0;
 
+static host_state_t state;
 
 server_socket_t server;
 
@@ -156,7 +157,7 @@ void connection_task(void *args)
     socket_connection_close(connection);
     num_connections_socket--;
     free(conn_args);
-    conn_args = NULL;
+    connections[robot_id] = NULL;
     vTaskDelete(NULL);
 }
 
@@ -184,6 +185,7 @@ void socket_task(void *args)
                     }
                     connections[i]->connection = connection;
                     connections[i]->robot_id = i;
+                    ESP_LOGI("HOST", "Creating connection task for client with id %d", i);
                     num_connections_socket++;
                     xTaskCreate(connection_task, "connection_task", 4096, (void *)connections[i], 5, NULL);
                     break;
@@ -201,7 +203,7 @@ void socket_task(void *args)
 
 // This task will read input data from the USB and push it to the corresponding USB queue
 // Packet structure: [SYNC_FLAG, ROBOT_ID, MSG_LEN, [PACKET]]
-void usb_task(void *args)
+void serial_task(void *args)
 {
     led_on(led2);
     uint8_t trigger = 0x0;
@@ -210,14 +212,15 @@ void usb_task(void *args)
         if (xEventGroupGetBits(control_mode_event_group) & SERIAL_STOP)
         {
             xEventGroupClearBits(control_mode_event_group, SERIAL_STOP);
-            xEventGroupSetBits(control_mode_event_group, SERIAL_CONFIRM);
+            state = PILOT;
+            xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 5, NULL);
             vTaskDelete(NULL);
         }
 
         int bytes_read = usb_device_read(&trigger, 1);
         if (bytes_read < 0)
         {
-            ESP_LOGE("USB_TASK", "Error: Failed to read data from USB.");
+            ESP_LOGE("SERIAL_TASK", "Error: Failed to read data from USB.");
             vTaskDelay(100 / portTICK_PERIOD_MS);
             continue;
         }
@@ -261,7 +264,7 @@ void usb_task(void *args)
             BaseType_t err = xQueueSend(usb_recv_queue[robot_id], &packet, portMAX_DELAY);
             if (err != pdTRUE)
             {
-                ESP_LOGE("USB_TASK", "Error: Failed to send packet to message queue.");
+                ESP_LOGE("SERIAL_TASK", "Error: Failed to send packet to message queue.");
                 free(packet.data);
             }
         }
@@ -278,7 +281,8 @@ void pilot_task(void *args)
         if (xEventGroupGetBits(control_mode_event_group) & PILOT_STOP)
         {
             xEventGroupClearBits(control_mode_event_group, PILOT_STOP);
-            xEventGroupSetBits(control_mode_event_group, PILOT_CONFIRM);
+            state = SERIAL; 
+            xTaskCreate(serial_task, "serial_task", 4096, NULL, 5, NULL);
             vTaskDelete(NULL);
         }
 
@@ -363,6 +367,15 @@ pair_config_t pair_wifi() {
     return new_pair_cfg;
 }
 
+void pilot_btn_callback(void* args) {
+    if (state == PILOT) {
+        xEventGroupSetBitsFromISR(control_mode_event_group, PILOT_STOP, NULL);
+    }
+    else if (state == SERIAL) {
+        xEventGroupSetBitsFromISR(control_mode_event_group, SERIAL_STOP, NULL);
+    }
+} 
+
 void app_main(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -418,28 +431,11 @@ void app_main(void)
     wifi_config_t *wifi_ap_cfg = access_point_init(pair_cfg.ssid, pair_cfg.password, AP_CHANNEL, AP_IS_HIDDEN, AP_MAX_CONN);
 
     server = socket_server_init(AP_PORT);
-
-    xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 5, NULL);
     xTaskCreate(socket_task, "socket_task", 4096, NULL, 4, NULL);
 
-    int state = 0;
-    while (true)
-    {
-        button_wait_for_press(pilot_btn);
-        button_wait_for_release(pilot_btn);
-        if (state == 0) {
-            xEventGroupSetBits(control_mode_event_group, PILOT_STOP);
-            xEventGroupWaitBits(control_mode_event_group, PILOT_CONFIRM, pdTRUE, pdTRUE, portMAX_DELAY);
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-            xTaskCreate(usb_task, "usb_task", 4096, NULL, 5, NULL);
-            state = 1;
-        }
-        else if (state == 1) {
-            xEventGroupSetBits(control_mode_event_group, SERIAL_STOP);
-            xEventGroupWaitBits(control_mode_event_group, SERIAL_CONFIRM, pdTRUE, pdTRUE, portMAX_DELAY);
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-            xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 5, NULL);
-            state = 0;
-        }
-    }
+    state = PILOT;
+    xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 5, NULL);
+
+    button_set_held_threshold(pilot_btn, 1000);
+    button_on_pressed_for(pilot_btn, pilot_btn_callback, NULL);
 }

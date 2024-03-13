@@ -61,6 +61,11 @@
 #define AP_PORT                 8000
 
 typedef enum {
+    PILOT,
+    SERIAL 
+} host_state_t;
+
+typedef enum {
     PILOT_STOP = BIT0,
     PILOT_CONFIRM = BIT1,
     SERIAL_STOP = BIT2,
@@ -76,3 +81,5 @@ typedef struct packet_t {
 
 void connection_task(void *args);
 void socket_task(void *args);
+void serial_task(void *args);
+void pilot_task(void *args);
