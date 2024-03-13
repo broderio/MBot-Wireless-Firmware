@@ -6,8 +6,10 @@ import threading
 import time
 from math import fabs
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 import numpy as np
 import argparse
+from numba import jit
 
 class SerialPose2D:
     byte_size = 8 + 4 * 3
@@ -185,13 +187,32 @@ def main():
     ser = Serial(port_name)
    
     reader = SerialReader(ser)
-    commander = VelocityCommander(ser)
-    commander.start()
+    # commander = VelocityCommander(ser)
+    # commander.start()
 
     plt.ion()
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='polar')  # Create a polar plot
+    fig = plt.figure(facecolor='#989C97')  # Set the background color
+    ax = fig.add_subplot(111, projection='polar', frame_on=False)  # Remove the frame
+    
+    ax.grid(False)  # Remove the grid
+    ax.set_rmax(8)
+    ax.set_xticklabels([])  # Remove the labels on the radius
+    ax.set_yticklabels([])  # Remove the labels on the radius
+    ax.set_rticks([])  # Remove the ticks on the radius
+
     angles = np.array([np.radians(x) for x in range(360)])[::-1]
+    lines = LineCollection([], colors='#FFCB05', linewidths=0.5)  # Initialize an empty LineCollection with thinner lines
+    ax.add_collection(lines)  # Add the LineCollection to the plot
+
+    obstacle_line, = ax.plot([], [], color='#00274C')
+
+    line_segments = np.zeros((360, 2, 2))
+
+    @jit(nopython=True)
+    def update_line_segments(angles, distances, line_segments):
+        line_segments[:, 1, 0] = angles
+        line_segments[:, 1, 1] = distances
+
     while True:
         packet = reader.get_packet_serial()
         if packet is not None:
@@ -203,17 +224,18 @@ def main():
                     if (topic == 210):
                         pose = SerialPose2D()
                         pose.decode(pkt)
-                        print(f'\033c Pose: {round(pose.x, 4)}, {round(pose.y, 4)}, {round(pose.theta, 4)}', end='', flush=True)
+                        # print(f'\033c Pose: {round(pose.x, 4)}, {round(pose.y, 4)}, {round(pose.theta, 4)}', end='', flush=True)
                     elif (topic == 240):
                         scan = SerialLidarScan()
                         scan.decode(pkt)
-
-                        distances = np.array(scan.ranges) / 1000
-                        ax.clear()
-                        index = distances < 8
-                        ax.scatter(angles[index], distances[index])  # Plot data in polar coordinates
-                        plt.draw()
-                        plt.pause(0.01)
+                        distances = np.array(scan.ranges, dtype=np.float64)  # Create a float array
+                        distances /= 1000 
+                        
+                        update_line_segments(angles, distances, line_segments)  # Update line segments with Numba-compiled function
+                        lines.set_segments(line_segments)
+                        obstacle_line.set_data(angles, distances)
+                        fig.canvas.draw()
+                        fig.canvas.flush_events()
 
 
 if __name__ == '__main__':

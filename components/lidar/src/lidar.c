@@ -694,6 +694,10 @@ int lidar_get_scan_360(lidar_t *lidar, uint32_t distances[360])
  * @param distances An array to store the distances of the express scan.
  * @return 0 if successful, -1 if there was an error.
  */
+
+express_scan_raw_t scan_raw_1;
+uint8_t first_scan = 1;
+
 int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t *distances)
 {
     if (!lidar->scanning || !lidar->motor_running)
@@ -729,26 +733,29 @@ int lidar_get_exp_scan_360(lidar_t *lidar, uint16_t *distances)
 
     int dsize = lidar->descriptor_size;
     uint8_t *raw = malloc(dsize);
-    express_scan_raw_t scan_raw_1, scan_raw_2;
+    express_scan_raw_t scan_raw_2;
     express_scan_t scan;
+    int ret;
 
     // Get first scan
     // printf("Reading first scan\n");
-    int ret = _read_response(raw, dsize);
-    if (ret < dsize)
-    {
-        ESP_LOGE("LIDAR", "Error reading response, read %d bytes\n", ret);
-        return -1;
+
+    if (first_scan) {
+        ret = _read_response(raw, dsize);
+        if (ret < dsize)
+        {
+            ESP_LOGE("LIDAR", "Error reading response, read %d bytes\n", ret);
+            return -1;
+        }
+        _get_raw_scan_express(&scan_raw_1, raw);
+        first_scan = 0;
     }
-    _get_raw_scan_express(&scan_raw_1, raw);
 
     int scan_over = 0;
     uint16_t raw_angle_prev = scan_raw_1.start_angle_q6;
     while (!scan_over)
     {
-        // printf("Reading scan, buffer: %d\n", uart_in_waiting(0));
         ret = _read_response(raw, dsize);
-        // printf("Read: %d, expected: %d\n", uart_in_waiting(0));
         if (ret < dsize)
         {
             ESP_LOGE("LIDAR", "Error reading response, read %d bytes\n", ret);
