@@ -40,16 +40,16 @@
 
 typedef struct connection_args_t
 {
-    connection_socket_t connection;
+    socket_connection_t *connection;
     uint8_t robot_id;
 } connection_args_t;
 
-static connection_args_t *connections[AP_MAX_CONN];
+static connection_args_t connections[AP_MAX_CONN];
 static int num_connections_socket = 0;
 
 static host_state_t state;
 
-server_socket_t server;
+socket_server_t *server;
 
 QueueHandle_t usb_recv_queue[AP_MAX_CONN];
 
@@ -72,60 +72,58 @@ void connection_task(void *args)
     }
 
     connection_args_t* conn_args = (connection_args_t *)args;
-    connection_socket_t connection = conn_args->connection;
+    socket_connection_t *connection = conn_args->connection;
     uint8_t robot_id = conn_args->robot_id;
-    char trigger = 0x0;
-    int empty_reads = 0;
+    uint8_t trigger = 0x0;
 
     while (true)
     {
         packet_t usb_packet;
         if (xQueueReceive(usb_recv_queue[robot_id], &usb_packet, 0) == pdTRUE)
         {
-            int bytes_sent = socket_connection_send(connection, (char *)usb_packet.data, usb_packet.len);
+            uint32_t bytes_sent = socket_connection_send(connection, usb_packet.data, usb_packet.len);
             free(usb_packet.data);
-            if (bytes_sent < 0)
+            if (socket_connection_is_closed(connection))
             {
-                ESP_LOGE("HOST", "Error sending data to client %d", robot_id);
                 goto end;
             }
+            ESP_LOGI("HOST", "Sent %lu bytes to client to id %d", bytes_sent, robot_id);
         }
 
-        int bytes_read = socket_connection_recv(connection, &trigger, 1);
-        if (bytes_read == 0)
-        {
-            empty_reads++;
-            if (empty_reads >= MAX_EMPTY_READS)
-            {
-                ESP_LOGW("HOST", "Client %d not sending data. Assuming disconnection...", robot_id);
-                goto end;
-            }
-            vTaskDelay(25 / portTICK_PERIOD_MS);
-            continue;
-        }
-        else if (bytes_read < 0)
+        uint32_t bytes_read = socket_connection_recv(connection, &trigger, 1);
+        if (socket_connection_is_closed(connection))
         {
             goto end;
         }
-        else if (trigger == SYNC_FLAG)
+        if (trigger == SYNC_FLAG)
         {
-            empty_reads = 0;
+            ESP_LOGI("HOST", "Received SYNC_FLAG from client with id %d", robot_id);
             uint8_t header[ROS_HEADER_LEN];
             header[0] = SYNC_FLAG;
 
             bytes_read = 0;
             while (bytes_read < ROS_HEADER_LEN - 1)
             {
-                int bytes = socket_connection_recv(connection, (char *)(header + 1 + bytes_read), ROS_HEADER_LEN - 1 - bytes_read);
-                if (bytes < 0)
+                bytes_read += socket_connection_recv(connection, header + 1 + bytes_read, ROS_HEADER_LEN - 1 - bytes_read);
+                if (socket_connection_is_closed(connection))
                 {
-                    ESP_LOGE("HOST", "Error receiving header from client %d", robot_id);
                     goto end;
                 }
-                bytes_read += bytes;
             }
 
-            uint16_t msg_len = ((uint16_t)header[3] << 8) | (header[2] & 0xFF);
+            uint16_t msg_len = header[2] + ((uint16_t)header[3] << 8);
+            uint16_t topic = header[5] + ((uint16_t)header[6] << 8);
+            uint8_t cs = header[4];
+            uint8_t version = header[1];
+
+            if (cs != checksum(header + 2, 2)) {
+                ESP_LOGE("SOCKET_TASK", "Error: Checksum over message length failed.");
+                goto delay;
+            }
+            // else if (version != VERSION_FLAG) {
+            //     ESP_LOGE("SOCKET_TASK", "Error: Version flag is incompatible.");
+            //     goto delay;
+            // }
 
             uint8_t *packet = (uint8_t *)malloc(msg_len + 4 + ROS_PKG_LEN);
 
@@ -139,25 +137,24 @@ void connection_task(void *args)
             bytes_read = 0;
             while (bytes_read < msg_len + 1)
             {
-                int bytes = socket_connection_recv(connection, (char *)(packet + 4 + ROS_HEADER_LEN + bytes_read), msg_len + 1 - bytes_read);
-                if (bytes < 0)
+                bytes_read += socket_connection_recv(connection, packet + 4 + ROS_HEADER_LEN + bytes_read, msg_len + 1 - bytes_read);
+                if (socket_connection_is_closed(connection))
                 {
-                    ESP_LOGE("HOST", "Error receiving data from client %d", robot_id);
-                    free(packet);
                     goto end;
                 }
-                bytes_read += bytes;
             }
-            usb_device_send(packet, msg_len + 4 + ROS_PKG_LEN);
+            // usb_device_send(packet, msg_len + 4 + ROS_PKG_LEN);
+            ESP_LOGI("HOST", "Received %d bytes from client with id %d", msg_len + 4 + ROS_PKG_LEN, robot_id);
             free(packet);
         }
+        delay:
+        vTaskDelay(25 / portTICK_PERIOD_MS);
     }
     end:
     ESP_LOGW("HOST", "Client disconnected. Closing connection...");
-    socket_connection_close(connection);
     num_connections_socket--;
-    free(conn_args);
-    connections[robot_id] = NULL;
+    socket_connection_free(connection);
+    connections[robot_id].connection = NULL;
     vTaskDelete(NULL);
 }
 
@@ -165,8 +162,8 @@ void socket_task(void *args)
 {
     while (true)
     {
-        connection_socket_t connection = socket_server_accept(server);
-        if (connection > 0)
+        socket_connection_t *connection = socket_server_accept(server);
+        if (connection != NULL)
         {
             if (num_connections_socket == AP_MAX_CONN) {
                 socket_connection_close(connection);
@@ -177,24 +174,15 @@ void socket_task(void *args)
             ESP_LOGI("HOST", "Client connected.");
 
             for (int i = 0; i < AP_MAX_CONN; ++i) {
-                if (connections[i] == NULL) {
-                    connections[i] = malloc(sizeof(connection_args_t));
-                    if (connections[i] == NULL) {
-                        ESP_LOGE("HOST", "Error allocating memory for connection args.");
-                        break;
-                    }
-                    connections[i]->connection = connection;
-                    connections[i]->robot_id = i;
+                if (connections[i].connection == NULL) {
+                    connections[i].connection = connection;
+                    connections[i].robot_id = i;
                     ESP_LOGI("HOST", "Creating connection task for client with id %d", i);
                     num_connections_socket++;
-                    xTaskCreate(connection_task, "connection_task", 4096, (void *)connections[i], 5, NULL);
+                    xTaskCreate(connection_task, "connection_task", 4096, (void *)&connections[i], 5, NULL);
                     break;
                 }
             }
-        }
-        else if (connection == -1)
-        {
-            ESP_LOGE("HOST", "Error accepting connection.");
         }
         delay:
         vTaskDelay(500 / portTICK_PERIOD_MS);
@@ -213,7 +201,7 @@ void serial_task(void *args)
         {
             xEventGroupClearBits(control_mode_event_group, SERIAL_STOP);
             state = PILOT;
-            xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 5, NULL);
+            xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 4, NULL);
             vTaskDelete(NULL);
         }
 
@@ -282,7 +270,7 @@ void pilot_task(void *args)
         {
             xEventGroupClearBits(control_mode_event_group, PILOT_STOP);
             state = SERIAL; 
-            xTaskCreate(serial_task, "serial_task", 4096, NULL, 5, NULL);
+            xTaskCreate(serial_task, "serial_task", 4096, NULL, 4, NULL);
             vTaskDelete(NULL);
         }
 
@@ -308,6 +296,13 @@ void pilot_task(void *args)
         packet_t packet;
         packet.len = sizeof(serial_twist2D_t) + ROS_PKG_LEN;
         packet.data = (uint8_t *)malloc(packet.len);
+        if (packet.data == NULL)
+        {
+            ESP_LOGE("PILOT_TASK", "Error: Failed to allocate memory for packet.");
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            continue;
+        }
+
         encode_rospkt(msg, sizeof(serial_twist2D_t), MBOT_VEL_CMD, packet.data);
 
         BaseType_t err = xQueueSend(usb_recv_queue[curr_robot_id], &packet, portMAX_DELAY);
@@ -320,6 +315,47 @@ void pilot_task(void *args)
         vx_prev = vx;
         wz_prev = wz;
         vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+}
+
+void heartbeat_task(void *args) 
+{
+    serial_timestamp_t timestamp = {0};
+    TickType_t xLastWakeTime;
+    while (true)
+    {
+        xLastWakeTime = xTaskGetTickCount();
+
+        for (int i = 0; i < AP_MAX_CONN; i++) {
+            if (connections[i].connection == NULL) {
+                continue;
+            }
+
+            timestamp.utime = esp_timer_get_time();
+            uint8_t msg[sizeof(serial_timestamp_t)];
+            timestamp_t_serialize(&timestamp, msg);
+
+            packet_t packet;
+            packet.len = sizeof(serial_timestamp_t) + ROS_PKG_LEN;
+            packet.data = (uint8_t *)malloc(packet.len);
+            if (packet.data == NULL)
+            {
+                ESP_LOGE("HEARTBEAT_TASK", "Error: Failed to allocate memory for packet.");
+                goto delay;
+            }
+
+            encode_rospkt(msg, sizeof(serial_timestamp_t), MBOT_TIMESYNC, packet.data);
+
+            BaseType_t err = xQueueSend(usb_recv_queue[i], &packet, portMAX_DELAY);
+            if (err != pdTRUE)
+            {
+                ESP_LOGE("HEARTBEAT_TASK", "Error: Failed to send packet to message queue.");
+                free(packet.data);
+            }
+        }
+
+        delay:
+        xTaskDelayUntil(&xLastWakeTime, 500 / portTICK_PERIOD_MS);
     }
 }
 
@@ -388,12 +424,12 @@ void app_main(void)
 
     for (int i = 0; i < AP_MAX_CONN; i++)
     {
-        usb_recv_queue[i] = xQueueCreate(32, sizeof(packet_t));
+        usb_recv_queue[i] = xQueueCreate(128, sizeof(packet_t));
     }
 
     control_mode_event_group = xEventGroupCreate();
 
-    usb_device_init(); 
+    // usb_device_init(); 
 
     js = joystick_create(JOYSTICK_X_PIN, JOYSTICK_Y_PIN);
 
@@ -430,11 +466,13 @@ void app_main(void)
 
     wifi_config_t *wifi_ap_cfg = access_point_init(pair_cfg.ssid, pair_cfg.password, AP_CHANNEL, AP_IS_HIDDEN, AP_MAX_CONN);
 
-    server = socket_server_init(AP_PORT);
+    server = socket_server_create(AP_PORT);
     xTaskCreate(socket_task, "socket_task", 4096, NULL, 4, NULL);
 
+    xTaskCreate(heartbeat_task, "heartbeat_task", 4096, NULL, 5, NULL);
+
     state = PILOT;
-    xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 5, NULL);
+    xTaskCreate(pilot_task, "pilot_task", 4096, NULL, 4, NULL);
 
     button_set_held_threshold(pilot_btn, 1000);
     button_on_pressed_for(pilot_btn, pilot_btn_callback, NULL);

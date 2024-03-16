@@ -56,7 +56,7 @@
 #define PILOT_WZ_SCALAR         -1.5
 
 #define AP_IS_HIDDEN            1
-#define AP_CHANNEL              6
+#define AP_CHANNEL              11
 #define AP_MAX_CONN             3
 #define AP_PORT                 8000
 

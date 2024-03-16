@@ -43,8 +43,9 @@ static uint16_t ranges[360];
 
 static button_t *pair_btn;
 
-client_socket_t client;
- uart_t uart;
+socket_client_t *client;
+
+uart_t uart;
 
 void tasks_init(void) {
     message_queue = xQueueCreate(64, sizeof(packet_t));
@@ -57,13 +58,13 @@ void tasks_init(void) {
 }
 
 typedef struct sender_task_args {
-    client_socket_t *client;
+    socket_client_t *client;
     uart_t *uart;
 } sender_task_args_t;
 
 void sender_task(void *args) {
     sender_task_args_t *sender_args = (sender_task_args_t *)args;
-    client_socket_t *client_ptr = sender_args->client;
+    socket_client_t *client = sender_args->client;
     uart_t *uart_ptr = sender_args->uart;
 
     while (true) {
@@ -78,17 +79,11 @@ void sender_task(void *args) {
         if (err != pdTRUE) {
             continue;
         }
-        // ESP_LOGI("SENDER_TASK", "Received message from queue of length: %d", message.len);
 
         switch (message.dest) {
             case HOST:
                 ESP_LOGI("SENDER_TASK", "Sending message to host of length: %d", message.len);
-                int socket_err = socket_client_send(*client_ptr, (char*)message.data, message.len);
-                if (socket_err < 0) {
-                    ESP_LOGE("SENDER_TASK", "Error: Failed to send message to host.");
-                    free(message.data);
-                    vTaskDelete(NULL);
-                }
+                uint32_t bytes_sent = socket_client_send(client, message.data, message.len);
                 break;
             case MBOT:
                 ESP_LOGI("SENDER_TASK", "Sending message to mbot of length: %d", message.len);
@@ -176,7 +171,7 @@ void mbot_task(void *args) {
 }
 
 void socket_task(void *args) {
-    client_socket_t *client_ptr = (client_socket_t *)args;
+    socket_client_t *client = (socket_client_t *)args;
     while (true) {
         if (xEventGroupGetBits(connection_event_group) & DISCONNECT) {
             ESP_LOGI("SOCKET_TASK", "Waiting for reconnection.");
@@ -184,27 +179,21 @@ void socket_task(void *args) {
         }
 
         uint8_t header[ROS_HEADER_LEN] = {0};
-        int bytes_read = socket_client_recv(*client_ptr, (char*)header, 1);
+        uint32_t bytes_read = socket_client_recv(client, header, 1);
 
         if (bytes_read == 0)
         {
             goto delay;
         }
-        else if (bytes_read < 0)
-        {
-            ESP_LOGE("SOCKET_TASK", "Client read error");
-            goto delay;
-        }
         else if (header[0] == SYNC_FLAG)
         {
-            bytes_read = socket_client_recv(*client_ptr, (char*)(header + 1), ROS_HEADER_LEN - 1);
-            if (bytes_read < 0) {
-                ESP_LOGE("SOCKET_TASK", "Client read error");
-                goto delay;
-            }
+            bytes_read = 0;
+            do {
+                bytes_read += socket_client_recv(client, header + 1 + bytes_read, ROS_HEADER_LEN - 1 - bytes_read);
+            } while (bytes_read < ROS_HEADER_LEN - 1);
 
-            uint16_t msg_len = header[2] + (header[3] << 8);
-            uint16_t topic = header[5] + (header[6] << 8);
+            uint16_t msg_len = header[2] + ((uint16_t)header[3] << 8);
+            uint16_t topic = header[5] + ((uint16_t)header[6] << 8);
             uint8_t cs = header[4];
             uint8_t version = header[1];
 
@@ -228,11 +217,10 @@ void socket_task(void *args) {
 
             memcpy(packet.data, header, ROS_HEADER_LEN);
 
-            bytes_read = socket_client_recv(*client_ptr, (char *)(packet.data + ROS_HEADER_LEN), msg_len + 1);
-            if (bytes_read < 0) {
-                ESP_LOGE("SOCKET_TASK", "Client read error");
-                goto delay;
-            }
+            bytes_read = 0;
+            do {
+                bytes_read += socket_client_recv(client, packet.data + ROS_HEADER_LEN + bytes_read, msg_len + 1 - bytes_read);
+            } while (bytes_read < msg_len + 1);
 
             ESP_LOGI("SOCKET_TASK", "Received message from host of length: %d", packet.len);
             BaseType_t err = xQueueSend(message_queue, &packet, 50 / portTICK_PERIOD_MS);
@@ -554,28 +542,28 @@ void app_main(void)
     station_connect(wifi_sta_cfg, pair_cfg.ssid, pair_cfg.password);
     station_wait_for_connection(-1);
 
-    client = socket_client_init(AP_IP_ADDR, AP_PORT);
-    while (client < 0)
+    client = socket_client_create(AP_IP_ADDR, AP_PORT);
+    while (client == NULL)
     {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
-        client = socket_client_init(AP_IP_ADDR, AP_PORT);
+        client = socket_client_create(AP_IP_ADDR, AP_PORT);
     }
 
     TaskHandle_t sender_task_handle, lidar_task_handle, lidar_read_task_handle, socket_task_handle, mbot_task_handle, heartbeat_task_handle;
 
     sender_task_args_t *sender_args = (sender_task_args_t*)malloc(sizeof(sender_task_args_t));
-    sender_args->client = &client;
+    sender_args->client = client;
     sender_args->uart = &uart;
     xTaskCreate(sender_task, "sender_task", 8192, sender_args, 4, &sender_task_handle);
 
     xTaskCreate(lidar_read_task, "lidar_read_task", 8192, NULL, 5, &lidar_read_task_handle);
     xTaskCreate(lidar_task, "lidar_task", 8192, NULL, 4, &lidar_task_handle);
-    xTaskCreate(socket_task, "socket_task", 8192, &client, 4, &socket_task_handle);
+    xTaskCreate(socket_task, "socket_task", 8192, client, 4, &socket_task_handle);
     xTaskCreate(mbot_task, "mbot_task", 8192, &uart, 4, &mbot_task_handle);
     xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 4, &heartbeat_task_handle);
 
     while (true) {
-        if (station_is_disconnected()) {
+        if (station_is_disconnected() || socket_client_is_closed(client)) {
             ESP_LOGW("CLIENT", "Disconnected from AP. Attempting to reconnect...");
             xEventGroupSetBits(connection_event_group, DISCONNECT);
             vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -594,23 +582,25 @@ void app_main(void)
 
             station_wait_for_connection(-1);
 
-            socket_client_close(client);
+            socket_client_free(client);
+            client = NULL;
 
-            client = socket_client_init(AP_IP_ADDR, AP_PORT);
-            while (client < 0)
+            client = socket_client_create(AP_IP_ADDR, AP_PORT);
+            while (client == NULL)
             {
                 vTaskDelay(1000 / portTICK_PERIOD_MS);
-                client = socket_client_init(AP_IP_ADDR, AP_PORT);
+                client = socket_client_create(AP_IP_ADDR, AP_PORT);
             }
 
-            sender_args->client = &client;
+            sender_args->client = client;
             xTaskCreate(sender_task, "sender_task", 8192, sender_args, 4, &sender_task_handle);
+
             xTaskCreate(lidar_read_task, "lidar_read_task", 8192, NULL, 5, NULL);
             xTaskCreate(lidar_task, "lidar_task", 8192, NULL, 4, &lidar_task_handle);
-            xTaskCreate(socket_task, "socket_task", 8192, &client, 4, &socket_task_handle);
+            xTaskCreate(socket_task, "socket_task", 8192, client, 4, &socket_task_handle);
             xTaskCreate(mbot_task, "mbot_task", 8192, &uart, 4, &mbot_task_handle);
             xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 4, &heartbeat_task_handle);
         }
-        vTaskDelay(500 / portTICK_PERIOD_MS);  
+        vTaskDelay(250 / portTICK_PERIOD_MS);  
     }
 }
