@@ -1,8 +1,3 @@
-/**
- * @file pairing.h
- * @brief This file contains functions for initializing and managing WiFi connections in station and access point modes.
- */
-
 #pragma once
 
 #include <stdio.h>
@@ -28,39 +23,9 @@
 #include "lwip/sys.h"
 #include "lwip/netdb.h"
 
-#include "usb_device.h"
-
 #define MBOT_IP_ADDR        "192.168.4.2"
 #define MBOT_NETMASK_ADDR   "255.0.0.0"
 #define MBOT_GW_ADDR        "192.168.4.1"
-
-#define DEFAULT_PAIR_CFG            \
-        {                           \
-            .ssid = "mBot",         \
-            .password = "I<3robots" \
-        }
-
-/**
- * @brief Structure representing the configuration for pairing.
- */
-typedef struct pair_config_t {
-    char ssid[9]; /**< Maximum unique name is 8 characters + null terminator */
-    char password[16]; /**< Password for the Wi-Fi network */
-} pair_config_t;
-
-/**
- * @brief Retrieves the pair configuration.
- *
- * @return The pair configuration.
- */
-pair_config_t get_pair_config();
-
-/**
- * @brief Sets the pair configuration.
- *
- * @param pair_cfg The pair configuration to set.
- */
-void set_pair_config(pair_config_t *pair_cfg);
 
 /**
  * @brief Initializes the Wi-Fi module.
@@ -74,7 +39,7 @@ wifi_init_config_t* wifi_start();
  *
  * @param wifi_cfg The Wi-Fi configuration to deinitialize.
  */
-void wifi_sop(wifi_init_config_t* wifi_cfg);
+void wifi_stop(wifi_init_config_t* wifi_cfg);
 
 /**
  * @brief Initializes ESP WiFi into station mode.

@@ -57,11 +57,9 @@ struct lidar_t
     uint8_t _motor_running;          /**< Flag indicating if the motor is running. */
     uint8_t _scanning;               /**< Flag indicating if the lidar is currently scanning. */
     uint8_t _descriptor_size;        /**< Size of the lidar descriptor. */
-    uint8_t _rx_pin;                 /**< Pin number for receiving data. */
-    uint8_t _tx_pin;                 /**< Pin number for transmitting data. */
     uint8_t _motor_pin;              /**< Pin number for controlling the motor. */
-    uint8_t _port_num;               /**< Port number of the lidar device. */
     uint8_t _first_scan;             /**< Flag indicating if the first scan has been read. */
+    uart_t *_uart;                  /**< UART structure for the lidar device. */
     lidar_scan_density_t _density;        /**< Density of lidar scan points. */
     lidar_scan_type_t _scan_type;        /**< Type of lidar scan. */
     scan_t _last_standard_scan;     /**< Last standard scan data. */
@@ -208,7 +206,7 @@ void _send_cmd(lidar_t *lidar, uint8_t cmd)
     uint8_t req[2];
     req[0] = LIDAR_SYNC;
     req[1] = cmd;
-    uart_write(lidar->_port_num, (const char *)req, 2);
+    uart_write(lidar->_uart, req, 2);
 }
 
 /**
@@ -247,7 +245,7 @@ void _send_payload_cmd(lidar_t *lidar, uint8_t cmd, uint8_t *payload, int payloa
     req[3 + payload_len] = checksum;
     
     // Send the request buffer over UART
-    uart_write(lidar->_port_num, (const char *)req, 4 + payload_len);
+    uart_write(lidar->_uart, req, 4 + payload_len);
 }
 
 /**
@@ -261,7 +259,7 @@ void _send_payload_cmd(lidar_t *lidar, uint8_t cmd, uint8_t *payload, int payloa
 int _read_descriptor(lidar_t *lidar, lidar_descriptor_t *descriptor)
 {
     uint8_t descriptor_bytes[LIDAR_DESCRIPTOR_LEN] = {0};
-    int bytes_read = uart_read_bytes(lidar->_port_num, descriptor_bytes, LIDAR_DESCRIPTOR_LEN, portMAX_DELAY);
+    int bytes_read = uart_read(lidar->_uart, descriptor_bytes, LIDAR_DESCRIPTOR_LEN, portMAX_DELAY);
     if (descriptor_bytes[0] != LIDAR_SYNC || descriptor_bytes[1] != LIDAR_SYNC_INV)
     {
         return -1;
@@ -283,7 +281,7 @@ int _read_descriptor(lidar_t *lidar, lidar_descriptor_t *descriptor)
  */
 int _read_response(lidar_t *lidar, uint8_t *data, int dsize)
 {
-    return uart_read(lidar->_port_num, (char *)data, dsize, 5000);
+    return uart_read(lidar->_uart, data, dsize, 5000);
 }
 
 
@@ -614,12 +612,8 @@ lidar_t *lidar_create(uint8_t port, uint8_t rx_pin, uint8_t tx_pin, uint8_t moto
     lidar->_motor_running = false;
     lidar->_density = DENSITY_STANDARD;
     lidar->_scanning = false;
-    lidar->_port_num = port;
-    lidar->_rx_pin = rx_pin;
-    lidar->_tx_pin = tx_pin;
     lidar->_motor_pin = motor_pin;
-
-    uart_init(lidar->_port_num, lidar->_rx_pin, lidar->_tx_pin, LIDAR_BAUDRATE, LIDAR_BUFFER_SIZE);
+    lidar->_uart = uart_init(port, rx_pin, tx_pin, LIDAR_BAUDRATE, LIDAR_BUFFER_SIZE);
 
     ledc_timer_config_t ledc_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -691,7 +685,7 @@ void lidar_free(lidar_t *lidar)
         lidar_stop_scan(lidar);
     }
     lidar_reset(lidar);
-    uart_deinit(lidar->_port_num);
+    uart_deinit(lidar->_uart);
 
     if (lidar_is_motor_running(lidar))
     {
@@ -702,17 +696,17 @@ void lidar_free(lidar_t *lidar)
 
 uint8_t lidar_get_port(lidar_t *lidar)
 {
-    return lidar->_port_num;
+    return uart_get_port(lidar->_uart);
 }
 
 uint8_t lidar_get_rx_pin(lidar_t *lidar)
 {
-    return lidar->_rx_pin;
+    return uart_get_rx_pin(lidar->_uart);
 }
 
 uint8_t lidar_get_tx_pin(lidar_t *lidar)
 {
-    return lidar->_tx_pin;
+    return uart_get_tx_pin(lidar->_uart);
 }
 
 uint8_t lidar_get_motor_pin(lidar_t *lidar)
@@ -766,7 +760,7 @@ uint8_t lidar_start_motor(lidar_t *lidar, float duty_cycle)
         return 1;
     }
 
-    lidar->_motor_running = true;
+    lidar->_motor_running = 1;
     return 0;
 }
 
@@ -891,7 +885,7 @@ void lidar_reset(lidar_t *lidar)
 
 void lidar_clear_input(lidar_t *lidar)
 {
-    uart_flush_buffer(lidar->_port_num);
+    uart_flush_buffer(lidar->_uart);
 }
 
 uint8_t lidar_start_scan(lidar_t *lidar, lidar_scan_type_t type)

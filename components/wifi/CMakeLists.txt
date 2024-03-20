@@ -1,3 +1,3 @@
-idf_component_register(SRCS "src/wifi_ap.c" "src/espnow.c" "src/wifi_sta.c"
+idf_component_register(SRCS "src/pairing.c" "src/wifi.c"
                     INCLUDE_DIRS "include"
-                    REQUIRES esp_wifi)
+                    REQUIRES esp_wifi usb_device nvs_flash)

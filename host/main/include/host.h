@@ -21,21 +21,16 @@
 #include "nvs_flash.h"
 #include "esp_timer.h"
 
-#include "lwip/err.h"
-#include "lwip/sockets.h"
-#include "lwip/sys.h"
-#include "lwip/netdb.h"
-
 #include "buttons.h"
 #include "joystick.h"
-#include "sockets.h"
+#include "tcp_socket.h"
 #include "led.h"
 #include "usb_device.h"
 #include "pairing.h"
+#include "wifi.h"
 #include "serializer.h"
 #include "lcm_types.h"
-
-#include "host.h"
+#include "direct.h"
 
 #define BUTTONS_UP_PIN          10                      /**< Controller button 1 (Up) pin on board (GPIO)*/
 #define BUTTONS_RIGHT_PIN       9                       /**< Controller Button 2 (Right) pin on board (GPIO)*/
@@ -80,6 +75,6 @@ typedef struct packet_t {
 #pragma pack(pop)
 
 void connection_task(void *args);
-void socket_task(void *args);
+void server_task(void *args);
 void serial_task(void *args);
 void pilot_task(void *args);

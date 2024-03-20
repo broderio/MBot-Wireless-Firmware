@@ -1,5 +1,4 @@
-#ifndef HOST_H
-#define HOST_H
+#pragma once
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,10 +18,19 @@
 #include "esp_log.h"
 #include "esp_event.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 
 #include "buttons.h"
-#include "sockets.h"
+#include "tcp_socket.h"
+#include "uart.h"
+#include "serializer.h"
+#include "lcm_types.h"
+#include "lidar.h"
+#include "camera.h"
+#include "usb_device.h"
+#include "pairing.h"
+#include "wifi.h"
 
 #define CAM_MCLK_PIN                18                  /**< GPIO Pin for I2S master clock */
 #define CAM_PCLK_PIN                8                   /**< GPIO Pin for I2S peripheral clock */
@@ -89,5 +97,3 @@ void mbot_task(void *args);
 void socket_task(void *args);
 void lidar_task(void *args);
 void camera_task(void *args);
-
-#endif

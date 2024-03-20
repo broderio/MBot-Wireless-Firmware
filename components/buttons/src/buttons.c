@@ -11,6 +11,8 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 
+#include "common.h"
+
 #include "buttons.h"
 
 #define TAG "BUTTON_BASE"
@@ -68,10 +70,6 @@ uint8_t _get_state(button_t *button) {
     return state;
 }
 
-uint32_t _get_time_ms() {
-    return xTaskGetTickCount() * portTICK_PERIOD_MS;
-}
-
 void _button_isr_handler(void *arg) {
     button_t *button = (button_t *)arg;
     button_read(button);
@@ -103,7 +101,7 @@ button_t *button_create(uint8_t pin) {
     button->_event_group = xEventGroupCreate();
     button->_current_state = _get_state(button);
     ESP_LOGI(TAG, "Button created on pin %d with state %d", pin, button->_current_state);
-    button->_time = _get_time_ms();
+    button->_time = get_time_ms();
     button->_last_state = button->_current_state;
     button->_last_change = button->_time;
 
@@ -172,7 +170,7 @@ uint8_t button_get_pull_up(button_t *button) {
 }
 
 uint8_t button_read(button_t* button) {
-    uint32_t read_started_ms = _get_time_ms();
+    uint32_t read_started_ms = get_time_ms();
     uint8_t state = _get_state(button);
 
     uint8_t within_db_time = read_started_ms - button->_last_change < button->_db_time;

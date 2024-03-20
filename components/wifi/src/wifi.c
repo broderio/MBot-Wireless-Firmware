@@ -21,9 +21,8 @@
 #include "lwip/sys.h"
 #include "lwip/netdb.h"
 
-#include "usb_device.h"
+#include "wifi.h"
 
-#include "pairing.h"
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_DISCONNECTED_BIT  BIT1
@@ -165,43 +164,6 @@ void _ap_set_static_ip(esp_netif_t *netif, const char *static_ip, const char* st
     ESP_ERROR_CHECK(_ap_set_dns_server(netif, ipaddr_addr("0.0.0.0"), ESP_NETIF_DNS_BACKUP));
 }
 
-pair_config_t get_pair_config() {
-    pair_config_t default_cfg = DEFAULT_PAIR_CFG;
-    pair_config_t pair_cfg = {0};
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE("PAIRING", "Failed to open NVS handle. Error: %s", esp_err_to_name(err));
-        return default_cfg;
-    }
-
-    size_t len = sizeof(pair_config_t);
-    err = nvs_get_blob(nvs_handle, "pair_cfg", &pair_cfg, &len);
-    if (err != ESP_OK) {
-        ESP_LOGE("PAIRING", "Failed to read ssid from NVS. Error: %s", esp_err_to_name(err));
-        nvs_close(nvs_handle);
-        return default_cfg;
-    }
-
-    nvs_close(nvs_handle);
-    return pair_cfg;
-}
-
-void set_pair_config(pair_config_t *pair_cfg) {
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        ESP_LOGE("PAIRING", "Failed to open NVS handle. Error: %s", esp_err_to_name(err));
-        return;
-    }
-
-    err = nvs_set_blob(nvs, "pair_cfg", pair_cfg, sizeof(pair_config_t));
-    if (err != ESP_OK) {
-        ESP_LOGE("PAIRING", "Failed to write ssid to NVS. Error: %s", esp_err_to_name(err));
-    }
-
-    nvs_close(nvs);
-}
 
 wifi_init_config_t *wifi_start() {
     wifi_init_config_t *wifi_cfg = (wifi_init_config_t *)malloc(sizeof(wifi_init_config_t));

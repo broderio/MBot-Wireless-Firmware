@@ -23,6 +23,8 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 
+#include "common.h"
+
 /**
  * @brief The button object structure.
  * 
