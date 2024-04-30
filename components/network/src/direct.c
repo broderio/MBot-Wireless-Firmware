@@ -43,6 +43,14 @@ typedef enum direct_state_t
     DIRECT_NONE
 } direct_state_t;
 
+typedef enum direct_message_type_t
+{
+    DIRECT_FIRST,
+    DIRECT_MIDDLE,
+    DIRECT_LAST,
+    DIRECT_SINGLE
+} direct_message_type_t;
+
 static QueueHandle_t direct_queue = NULL;
 static QueueHandle_t direct_send_status_queue = NULL;
 
@@ -440,23 +448,48 @@ uint8_t direct_send(const uint8_t *mac, uint8_t *buffer, uint32_t buffer_len)
         ESP_LOGE(DIRECT_TAG, "Direct communication not initialized");
         return 1;
     }
-    uint32_t num_sends = (buffer_len + DIRECT_MAX_PACKET_SIZE - 1) / DIRECT_MAX_PACKET_SIZE;
-    uint32_t remaining_bytes = buffer_len;
+    uint8_t out_buffer[DIRECT_MAX_PACKET_SIZE];
+
+    uint32_t bytes_left = buffer_len;
     uint32_t offset = 0;
-    for (uint32_t i = 0; i < num_sends; i++)
+    while (bytes_left > 0)
     {
-        uint32_t len = (remaining_bytes > DIRECT_MAX_PACKET_SIZE) ? DIRECT_MAX_PACKET_SIZE : remaining_bytes;
-        esp_now_send(mac, buffer + offset, len);
+        uint32_t len = (bytes_left > DIRECT_MAX_PACKET_SIZE - 1) ? DIRECT_MAX_PACKET_SIZE - 1 : bytes_left;
+
+        uint8_t type;
+        if (bytes_left == buffer_len)
+        {
+            if (bytes_left == len)
+            {
+                type = DIRECT_SINGLE;
+            }
+            else
+            {
+                type = DIRECT_FIRST;
+            }
+        }
+        else if (bytes_left == len)
+        {
+            type = DIRECT_LAST;
+        }
+        else
+        {
+            type = DIRECT_MIDDLE;
+        }
+
+        out_buffer[0] = type;
+        memcpy(out_buffer + 1, buffer + offset, len);
+        esp_now_send(mac, out_buffer, len + 1);
 
         esp_now_send_status_t status;
-        xQueueReceive(direct_send_status_queue, &status, portMAX_DELAY);
+        xQueueReceive(direct_send_status_queue, &status, 25 / portTICK_PERIOD_MS);
         if (status != ESP_NOW_SEND_SUCCESS)
         {
             ESP_LOGE(DIRECT_TAG, "Failed to send packet");
             return 1;
         }
 
-        remaining_bytes -= len;
+        bytes_left -= len;
         offset += len;
     }
     return 0;
@@ -469,16 +502,51 @@ uint8_t direct_receive(uint8_t *mac, uint8_t *buffer, uint32_t *buffer_len)
         ESP_LOGE(DIRECT_TAG, "Direct communication not initialized");
         return 1;
     }
-    direct_packet_t packet = {0};
-    BaseType_t err = xQueueReceive(direct_queue, &packet, portMAX_DELAY);
+
+    direct_packet_t packet;
+    BaseType_t err = xQueueReceive(direct_queue, &packet, 10 / portTICK_PERIOD_MS);
     if (err != pdTRUE)
     {
-        ESP_LOGE(DIRECT_TAG, "Failed to receive packet from direct queue");
         return 1;
     }
+
+    uint32_t offset = 0;
+    uint8_t type = packet.data[0];
+    uint32_t len = packet.len - 1;
+    memcpy(buffer + offset, packet.data + 1, len);
+    *buffer_len = len;
     memcpy(mac, packet.mac, 6);
-    memcpy(buffer, packet.data, packet.len);
-    *buffer_len = packet.len;
     free(packet.data);
+
+    if (type == DIRECT_SINGLE)
+    {
+        return 0;
+    }
+    else if (type != DIRECT_FIRST)
+    {
+        return 1;
+    }
+
+    while (type != DIRECT_LAST)
+    {
+        BaseType_t err = xQueueReceive(direct_queue, &packet, 10 / portTICK_PERIOD_MS);
+        if (err != pdTRUE)
+        {
+            return 1;
+        }
+
+        type = packet.data[0];
+        len = packet.len - 1;
+        memcpy(buffer + offset, packet.data + 1, len);
+        *buffer_len += len;
+        offset += len;
+        free(packet.data);
+
+        if (type != DIRECT_MIDDLE && type != DIRECT_LAST)
+        {
+            return 1;
+        }
+    }
+
     return 0;
 }

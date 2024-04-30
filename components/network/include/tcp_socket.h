@@ -39,12 +39,9 @@ typedef struct tcp_client_t tcp_client_t;
  * This function creates a new tcp server that listens on the specified port.
  *
  * @param port The port number on which the server should listen.
- * @param blocking A flag indicating whether the server socket should be blocking or non-blocking.
  * @return A pointer to the newly created tcp_server_t object.
  */
-tcp_server_t *tcp_server_create(uint32_t port, uint8_t blocking);
-
-void tcp_server_set_blocking(tcp_server_t *server, uint8_t blocking);
+tcp_server_t *tcp_server_create(uint32_t port);
 
 /**
  * @brief Accepts a new connection on the tcp server.
@@ -52,10 +49,9 @@ void tcp_server_set_blocking(tcp_server_t *server, uint8_t blocking);
  * This function accepts a new connection on the tcp server and returns a tcp_connection_t object representing the connection.
  *
  * @param server A pointer to the tcp_server_t object.
- * @param blocking A flag indicating whether the connection socket should be blocking or non-blocking.
  * @return A pointer to the newly created tcp_connection_t object.
  */
-tcp_connection_t *tcp_server_accept(tcp_server_t *server, uint8_t blocking);
+tcp_connection_t *tcp_server_accept(tcp_server_t *server);
 
 /**
  * @brief Closes the tcp server.
@@ -167,9 +163,8 @@ uint8_t tcp_connection_is_closed(tcp_connection_t *connection);
  * 
  * @param host_ip The IP address of the server to connect to.
  * @param port The port number of the server to connect to.
- * @param blocking A flag indicating whether the client socket should be blocking or non-blocking.
  */
-tcp_client_t *tcp_client_create(const char *host_ip, uint32_t port, uint8_t blocking);
+tcp_client_t *tcp_client_create(const char *host_ip, uint32_t port);
 
 void tcp_client_set_blocking(tcp_client_t *client, uint8_t blocking);
 

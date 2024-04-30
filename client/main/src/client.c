@@ -47,7 +47,7 @@ usb_device_t *usb_dev;
 
 void tasks_init(void)
 {
-    message_queue = xQueueCreate(64, sizeof(packet_t));
+    message_queue = xQueueCreate(128, sizeof(packet_t));
 
     connection_event_group = xEventGroupCreate();
 
@@ -67,7 +67,8 @@ void sender_task(void *args)
         }
 
         packet_t message;
-        BaseType_t err = xQueueReceive(message_queue, &message, 100 / portTICK_PERIOD_MS);
+        // ESP_LOGI("SENDER_TASK", "Waiting for message from queue, length: %d", uxQueueMessagesWaiting(message_queue));
+        BaseType_t err = xQueueReceive(message_queue, &message, portMAX_DELAY);
         if (err != pdTRUE)
         {
             continue;
@@ -80,13 +81,14 @@ void sender_task(void *args)
             uint32_t bytes_sent = tcp_client_send(client, message.data, message.len);
             break;
         case MBOT:
-            ESP_LOGI("SENDER_TASK", "Sending message to mbot of length: %d", message.len);
+            // ESP_LOGI("SENDER_TASK", "Sending message to mbot of length: %d", message.len);
             uart_write(uart, message.data, message.len);
             break;
         default:
             break;
         }
         free(message.data);
+        // ESP_LOGI("SENDER_TASK", "Sent message to destination: %d", message.dest);
     }
 }
 
@@ -102,7 +104,7 @@ void mbot_task(void *args)
 
         uint8_t header[ROS_HEADER_LEN] = {0};
 
-        int bytes_read = uart_read(uart, header, 1, 0);
+        int bytes_read = uart_read(uart, header, 1, 100);
 
         if (bytes_read == 0)
         {
@@ -158,7 +160,8 @@ void mbot_task(void *args)
                 goto delay;
             }
 
-            BaseType_t err = xQueueSend(message_queue, &packet, 50 / portTICK_PERIOD_MS);
+            // ESP_LOGI("SOCKET_TASK", "Queue size: %d", uxQueueMessagesWaiting(message_queue));
+            BaseType_t err = xQueueSend(message_queue, &packet, portMAX_DELAY);
             if (err != pdTRUE)
             {
                 ESP_LOGE("MBOT_TASK", "Error: Failed to send packet to message queue.");
@@ -229,8 +232,9 @@ void socket_task(void *args)
                 bytes_read += tcp_client_recv(client, packet.data + ROS_HEADER_LEN + bytes_read, msg_len + 1 - bytes_read);
             } while (bytes_read < msg_len + 1);
 
-            ESP_LOGI("SOCKET_TASK", "Received message from host of length: %d", packet.len);
-            BaseType_t err = xQueueSend(message_queue, &packet, 50 / portTICK_PERIOD_MS);
+            // ESP_LOGI("SOCKET_TASK", "Received message from host of length: %d", packet.len);
+            // ESP_LOGI("SOCKET_TASK", "Queue size: %d", uxQueueMessagesWaiting(message_queue));
+            BaseType_t err = xQueueSend(message_queue, &packet, portMAX_DELAY);
             if (err != pdTRUE)
             {
                 ESP_LOGE("SOCKET_TASK", "Error: Failed to send packet to message queue.");
@@ -263,7 +267,10 @@ void lidar_read_task(void *args)
             lidar_free(lidar);
             continue;
         }
+        // ESP_LOGI("LIDAR_READ_TASK", "Lidar scan started.");
 
+        TickType_t count = 0;
+        TickType_t start_time = xTaskGetTickCount();
         while (1)
         {
             if (xEventGroupGetBits(connection_event_group) & DISCONNECT)
@@ -274,6 +281,7 @@ void lidar_read_task(void *args)
                 vTaskDelete(NULL);
             }
 
+            // ESP_LOGI("LIDAR_READ_TASK", "Getting scan");
             xSemaphoreTake(lidar_sem, portMAX_DELAY);
             error = lidar_get_scan_360(lidar, ranges);
             xSemaphoreGive(lidar_sem);
@@ -293,6 +301,10 @@ void lidar_task(void *args)
 {
     TickType_t xLastWakeTime;
     serial_lidar_scan_t scan = {0};
+
+    TickType_t count = 0;
+    TickType_t start_time = xTaskGetTickCount();
+
     while (1)
     {
         if (xEventGroupGetBits(connection_event_group) & DISCONNECT)
@@ -318,15 +330,20 @@ void lidar_task(void *args)
         }
 
         encode_rospkt((uint8_t *)&scan, sizeof(serial_lidar_scan_t), MBOT_LIDAR_SCAN, packet.data);
-        BaseType_t err = xQueueSend(message_queue, &packet, 100 / portTICK_PERIOD_MS);
+        // ESP_LOGI("SOCKET_TASK", "Queue size: %d", uxQueueMessagesWaiting(message_queue));
+        BaseType_t err = xQueueSend(message_queue, &packet, portMAX_DELAY);
         if (err != pdTRUE)
         {
             ESP_LOGE("LIDAR_TASK", "Error: Failed to send packet to message queue.");
             free(packet.data);
         }
 
+        count += 1;                
+        ESP_LOGI("HOST", "Receiving lidar at %f Hz", (float)count / (((xTaskGetTickCount() - start_time) * portTICK_PERIOD_MS) / 1000.0));
+
     delay:
-        xTaskDelayUntil(&xLastWakeTime, 100 / portTICK_PERIOD_MS);
+        xTaskDelayUntil(&xLastWakeTime, 125 / portTICK_PERIOD_MS);
+        // vTaskDelay(500 / portTICK_PERIOD_MS);
     }
 }
 
@@ -399,7 +416,7 @@ void camera_task(void *)
             encode_rospkt((uint8_t *)msg, sizeof(serial_camera_frame_t) + frame_size, MBOT_CAMERA_FRAME, packet.data);
             free(msg);
 
-            BaseType_t rtos_err = xQueueSend(message_queue, &packet, 50 / portTICK_PERIOD_MS);
+            BaseType_t rtos_err = xQueueSend(message_queue, &packet, portMAX_DELAY);
             if (rtos_err != pdTRUE)
             {
                 ESP_LOGE("CAMERA_TASK", "Error: Failed to send packet to message queue.");
@@ -443,7 +460,8 @@ void heartbeat_task(void *args)
 
         encode_rospkt(msg, sizeof(serial_timestamp_t), MBOT_TIMESYNC, packet.data);
 
-        BaseType_t err = xQueueSend(message_queue, &packet, 50 / portTICK_PERIOD_MS);
+        // ESP_LOGI("SOCKET_TASK", "Queue size: %d", uxQueueMessagesWaiting(message_queue));
+        BaseType_t err = xQueueSend(message_queue, &packet, portMAX_DELAY);
         if (err != pdTRUE)
         {
             ESP_LOGE("HEARTBEAT_TASK", "Error: Failed to send packet to message queue.");
@@ -550,20 +568,20 @@ void app_main(void)
     station_connect(wifi_sta_cfg, pair_cfg.ssid, pair_cfg.password);
     station_wait_for_connection(-1);
 
-    client = tcp_client_create(AP_IP_ADDR, AP_PORT, 0);
+    client = tcp_client_create(AP_IP_ADDR, AP_PORT);
     while (client == NULL)
     {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
-        client = tcp_client_create(AP_IP_ADDR, AP_PORT, 0);
+        client = tcp_client_create(AP_IP_ADDR, AP_PORT);
     }
 
     TaskHandle_t sender_task_handle, lidar_task_handle, lidar_read_task_handle, socket_task_handle, mbot_task_handle, heartbeat_task_handle;
     xTaskCreate(sender_task, "sender_task", 8192, NULL, 4, &sender_task_handle);
-    xTaskCreate(lidar_read_task, "lidar_read_task", 8192, NULL, 5, &lidar_read_task_handle);
-    xTaskCreate(lidar_task, "lidar_task", 8192, NULL, 4, &lidar_task_handle);
-    xTaskCreate(socket_task, "socket_task", 8192, NULL, 4, &socket_task_handle);
-    xTaskCreate(mbot_task, "mbot_task", 8192, NULL, 4, &mbot_task_handle);
-    xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 4, &heartbeat_task_handle);
+    xTaskCreate(lidar_read_task, "lidar_read_task", 8192, NULL, 3, &lidar_read_task_handle);
+    xTaskCreate(lidar_task, "lidar_task", 8192, NULL, 3, &lidar_task_handle);
+    xTaskCreate(socket_task, "socket_task", 8192, NULL, 3, &socket_task_handle);
+    xTaskCreate(mbot_task, "mbot_task", 8192, NULL, 3, &mbot_task_handle);
+    xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 3, &heartbeat_task_handle);
 
     while (true)
     {
@@ -590,19 +608,19 @@ void app_main(void)
             tcp_client_free(client);
             client = NULL;
 
-            client = tcp_client_create(AP_IP_ADDR, AP_PORT, 0);
+            client = tcp_client_create(AP_IP_ADDR, AP_PORT);
             while (client == NULL)
             {
                 vTaskDelay(1000 / portTICK_PERIOD_MS);
-                client = tcp_client_create(AP_IP_ADDR, AP_PORT, 0);
+                client = tcp_client_create(AP_IP_ADDR, AP_PORT);
             }
 
             xTaskCreate(sender_task, "sender_task", 8192, NULL, 4, &sender_task_handle);
-            xTaskCreate(lidar_read_task, "lidar_read_task", 8192, NULL, 5, NULL);
-            xTaskCreate(lidar_task, "lidar_task", 8192, NULL, 4, &lidar_task_handle);
-            xTaskCreate(socket_task, "socket_task", 8192, NULL, 4, &socket_task_handle);
-            xTaskCreate(mbot_task, "mbot_task", 8192, NULL, 4, &mbot_task_handle);
-            xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 4, &heartbeat_task_handle);
+            xTaskCreate(lidar_read_task, "lidar_read_task", 8192, NULL, 3, NULL);
+            xTaskCreate(lidar_task, "lidar_task", 8192, NULL, 3, &lidar_task_handle);
+            xTaskCreate(socket_task, "socket_task", 8192, NULL, 3, &socket_task_handle);
+            xTaskCreate(mbot_task, "mbot_task", 8192, NULL, 3, &mbot_task_handle);
+            xTaskCreate(heartbeat_task, "heartbeat_task", 8192, NULL, 3, &heartbeat_task_handle);
         }
         vTaskDelay(250 / portTICK_PERIOD_MS);
     }

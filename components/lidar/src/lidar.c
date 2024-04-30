@@ -259,7 +259,7 @@ void _send_payload_cmd(lidar_t *lidar, uint8_t cmd, uint8_t *payload, int payloa
 int _read_descriptor(lidar_t *lidar, lidar_descriptor_t *descriptor)
 {
     uint8_t descriptor_bytes[LIDAR_DESCRIPTOR_LEN] = {0};
-    int bytes_read = uart_read(lidar->_uart, descriptor_bytes, LIDAR_DESCRIPTOR_LEN, portMAX_DELAY);
+    int bytes_read = uart_read(lidar->_uart, descriptor_bytes, LIDAR_DESCRIPTOR_LEN, 5000);
     if (descriptor_bytes[0] != LIDAR_SYNC || descriptor_bytes[1] != LIDAR_SYNC_INV)
     {
         return -1;
@@ -653,6 +653,7 @@ lidar_t *lidar_create(uint8_t port, uint8_t rx_pin, uint8_t tx_pin, uint8_t moto
         return NULL;
     }
 
+    ESP_LOGI("LIDAR", "Lidar initialized on port: %d, rx_pin: %d, tx_pin: %d, motor_pin: %d", port, rx_pin, tx_pin, motor_pin);
     lidar_health_t health;
     lidar_err = lidar_get_health(lidar, &health);
     if (lidar_err || health.status != LIDAR_HEALTH_GOOD)
@@ -667,6 +668,8 @@ lidar_t *lidar_create(uint8_t port, uint8_t rx_pin, uint8_t tx_pin, uint8_t moto
         }
     }
 
+    ESP_LOGI("LIDAR", "Lidar health status: %d", health.status);
+
     lidar_info_t info;
     lidar_err = lidar_get_info(lidar, &info);
     if (lidar_err) {
@@ -674,6 +677,8 @@ lidar_t *lidar_create(uint8_t port, uint8_t rx_pin, uint8_t tx_pin, uint8_t moto
         free(lidar);
         return NULL;
     }
+
+    ESP_LOGI("LIDAR", "Lidar model: %d, firmware: %d.%d, hardware: %d, serial number: %s", info.model, info.firmware_major, info.firmware_minor, info.hardware, info.serialnumber);
 
     return lidar;
 }

@@ -44,16 +44,16 @@ struct tcp_client_t
  */
 int64_t _tcp_send(int32_t fd, uint8_t *buffer, uint32_t buffer_len)
 {
-    int64_t bytes_sent = 0;
-    while (bytes_sent < buffer_len) {
-        int64_t bytes = send(fd, buffer + bytes_sent, buffer_len - bytes_sent, 0);
-        if (bytes < 0) {
+    int to_write = buffer_len;
+    while (to_write > 0) {
+        int written = send(fd, buffer + (buffer_len - to_write), to_write, 0);
+        if (written < 0 && errno != EINPROGRESS && errno != EAGAIN && errno != EWOULDBLOCK) {
             ESP_LOGE(SOCKET_TAG, "Error occurred during sending: errno %d", errno);
             return -1;
         }
-        bytes_sent += bytes;
+        to_write -= written;
     }
-    return bytes_sent;
+    return buffer_len;
 }
 
 /**
@@ -98,15 +98,7 @@ void _tcp_close(tcp_t *tcp)
     tcp->_closed = 1;
 }
 
-void _tcp_set_blocking(tcp_t *tcp, uint8_t blocking)
-{
-    int flags = (blocking) ? fcntl(tcp->_fd, F_GETFL) & ~O_NONBLOCK : fcntl(tcp->_fd, F_GETFL) | O_NONBLOCK;
-    if (fcntl(tcp->_fd, F_SETFL, flags) == -1) {
-        ESP_LOGE(SOCKET_TAG, "Unable to set tcp non blocking: errno %d", errno);
-    }
-}
-
-tcp_server_t *tcp_server_create(uint32_t port, uint8_t blocking)
+tcp_server_t *tcp_server_create(uint32_t port)
 {
     tcp_server_t *server = (tcp_server_t *)malloc(sizeof(tcp_server_t));
     if (server == NULL) {
@@ -138,13 +130,12 @@ tcp_server_t *tcp_server_create(uint32_t port, uint8_t blocking)
     }
     server->_tcp._closed = 0;
 
-    // Set the reuse address option
-    int opt = 1;
-    setsockopt(server->_tcp._fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    setsockopt(server->_tcp._fd, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt));
-
-    // Set the tcp to non-blocking
-    _tcp_set_blocking(&server->_tcp, blocking);
+    int flags = fcntl(server->_tcp._fd, F_GETFL);
+    if (fcntl(server->_tcp._fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        ESP_LOGE(SOCKET_TAG, "Unable to set non-blocking: errno %d", errno);
+        tcp_server_free(server);
+        return NULL;
+    }
 
     ESP_LOGI(SOCKET_TAG, "tcp created");
 
@@ -168,7 +159,7 @@ tcp_server_t *tcp_server_create(uint32_t port, uint8_t blocking)
     return server;
 }
 
-tcp_connection_t *tcp_server_accept(tcp_server_t *server, uint8_t blocking)
+tcp_connection_t *tcp_server_accept(tcp_server_t *server)
 {
     if (server == NULL) {
         return NULL;
@@ -196,19 +187,16 @@ tcp_connection_t *tcp_server_accept(tcp_server_t *server, uint8_t blocking)
     }
     connection->_tcp._closed = 0;
 
-    _tcp_set_blocking(&connection->_tcp, blocking);
+    int flags = fcntl(connection->_tcp._fd, F_GETFL);
+    if (fcntl(connection->_tcp._fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        ESP_LOGE(SOCKET_TAG, "Unable to set non-blocking: errno %d", errno);
+        tcp_connection_free(connection);
+        return NULL;
+    }
 
     ESP_LOGI(SOCKET_TAG, "tcp accepted!");
     connection->_last_recv_time = get_time_ms();
     return connection;
-}
-
-void tcp_server_set_blocking(tcp_server_t *server, uint8_t blocking)
-{
-    if (server == NULL) {
-        return;
-    }
-    _tcp_set_blocking(&server->_tcp, blocking);
 }
 
 void tcp_server_close(tcp_server_t *server)
@@ -257,14 +245,6 @@ uint8_t tcp_server_is_closed(tcp_server_t *server)
         return 1;
     }
     return server->_tcp._closed;
-}
-
-void tcp_connection_set_blocking(tcp_connection_t *connection, uint8_t blocking)
-{
-    if (connection == NULL) {
-        return;
-    }
-    _tcp_set_blocking(&connection->_tcp, blocking);
 }
 
 uint32_t tcp_connection_send(tcp_connection_t *connection, uint8_t *buffer, uint32_t buffer_len)
@@ -348,7 +328,7 @@ void tcp_connection_free(tcp_connection_t *connection)
     free(connection);
 }
 
-tcp_client_t *tcp_client_create(const char *host_ip, uint32_t port, uint8_t blocking)
+tcp_client_t *tcp_client_create(const char *host_ip, uint32_t port)
 {
     tcp_client_t *client = (tcp_client_t *)malloc(sizeof(tcp_client_t));
     if (client == NULL) {
@@ -376,18 +356,23 @@ tcp_client_t *tcp_client_create(const char *host_ip, uint32_t port, uint8_t bloc
     }
     client->_tcp._closed = 0;
 
-    _tcp_set_blocking(&client->_tcp, blocking);
+    int flags = fcntl(client->_tcp._fd, F_GETFL);
+    if (fcntl(client->_tcp._fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        ESP_LOGE(SOCKET_TAG, "Unable to set non-blocking: errno %d", errno);
+        goto error;
+    }
 
     ESP_LOGI(SOCKET_TAG, "tcp created, connecting to %s:%lu", host_ip, port);
 
     // Connecting to the server
     if (connect(client->_tcp._fd, address_info->ai_addr, address_info->ai_addrlen)) {
         if (errno == EINPROGRESS) {
-            struct pollfd pfd;
-            pfd.fd = client->_tcp._fd;
-            pfd.events = POLLOUT;
+            fd_set fdset;
+            FD_ZERO(&fdset);
+            FD_SET(client->_tcp._fd, &fdset);
 
-            res = poll(&pfd, 1, -1); // -1 means no timeout
+            // Connection in progress -> have to wait until the connecting socket is marked as writable, i.e. connection completes
+            res = select(client->_tcp._fd+1, NULL, &fdset, NULL, NULL);
             if (res < 0) {
                 ESP_LOGE(SOCKET_TAG, "Error during connection: poll for tcp to be writable");
                 goto error;
@@ -420,14 +405,6 @@ tcp_client_t *tcp_client_create(const char *host_ip, uint32_t port, uint8_t bloc
         tcp_client_free(client);
         free(address_info);
         return NULL;
-}
-
-void tcp_client_set_blocking(tcp_client_t *client, uint8_t blocking)
-{
-    if (client == NULL) {
-        return;
-    }
-    _tcp_set_blocking(&client->_tcp, blocking);
 }
 
 uint32_t tcp_client_send(tcp_client_t *client, uint8_t *buffer, uint32_t buffer_len)

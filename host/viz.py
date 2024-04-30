@@ -212,6 +212,14 @@ def main():
         line_segments[:, 1, 0] = angles
         line_segments[:, 1, 1] = distances
 
+    # Create a text box at the top left corner of the plot
+    pose_text = ax.text(1, 1, '', transform=ax.transAxes, fontweight='bold',
+                    verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(facecolor='white', alpha=1.0, edgecolor='none'))
+
+    pose_count = 0
+    lidar_count = 0
+    total_time = time.time()
     while True:
         packet = reader.get_packet_serial()
         if packet is not None:
@@ -220,13 +228,18 @@ def main():
                 out = parse_message(msg)
                 if out is not None:
                     topic, pkt = out
+                    
                     if (topic == 210):
                         pose = SerialPose2D()
                         pose.decode(pkt)
-                        # print(f'\033c Pose: {round(pose.x, 4)}, {round(pose.y, 4)}, {round(pose.theta, 4)}', end='', flush=True)
+                        pose_count += 1
+                        # Update the text box with the new pose
+                        pose_text.set_text(f'X: {round(pose.x, 4)}, Y: {round(pose.y, 4)}, θ: {round(pose.theta, 4)}\n Pose Hz: {pose_count / (time.time() - total_time):.2f}, Lidar Hz: {lidar_count / (time.time() - total_time):.2f}')
                     elif (topic == 240):
                         scan = SerialLidarScan()
                         scan.decode(pkt)
+                        lidar_count += 1
+
                         distances = np.array(scan.ranges, dtype=np.float64)  # Create a float array
                         distances /= 1000 
                         

@@ -67,97 +67,145 @@ static usb_device_t *usb_dev;
 // This should be resolved by dynamically allocating connection pointers for each unique MAC address that connects to the access point
 // This would allow the connection task to resume on the same client if it disconnects and reconnects without uncertainty in robot_id maintainence
 
+uint8_t read_exact(tcp_connection_t *connection, uint8_t *buffer, uint32_t len)
+{
+    uint32_t bytes_read = 0;
+    while (bytes_read < len)
+    {
+        bytes_read += tcp_connection_recv(connection, buffer + bytes_read, len - bytes_read);
+        if (tcp_connection_is_closed(connection))
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 void connection_task(void *args)
 {
-    if (args == NULL)
-    {
-        ESP_LOGE("HOST", "Error: NULL connection args.");
-        vTaskDelete(NULL);
-    }
     tcp_connection_t *connection;
-    uint8_t robot_id;
+    uint8_t robot_id = 0;
+
+    TickType_t count = 0;
+    TickType_t start_time = xTaskGetTickCount();
+
     while (true)
     {
-        for (robot_id = 0; robot_id < AP_MAX_CONN; robot_id++)
+        while (true)
         {
-            if (connections[robot_id] == NULL)
+            if (num_connections_socket == 0)
             {
+                vTaskDelay(500 / portTICK_PERIOD_MS);
                 continue;
             }
 
+            robot_id = (robot_id + 1) % num_connections_socket;
             connection = connections[robot_id];
 
             packet_t usb_packet;
             if (xQueueReceive(usb_recv_queue[robot_id], &usb_packet, 0) == pdTRUE)
             {
-                uint32_t bytes_sent = tcp_connection_send(connection, usb_packet.data, usb_packet.len);
+                tcp_connection_send(connection, usb_packet.data, usb_packet.len);
                 free(usb_packet.data);
                 if (tcp_connection_is_closed(connection))
                 {
                     goto end;
                 }
-                ESP_LOGI("HOST", "Sent %lu bytes to client with id %d", bytes_sent, robot_id);
+                // ESP_LOGI("HOST", "Sent %lu bytes to client with id %d", bytes_sent, robot_id);
             }
 
-            uint8_t trigger = 0x0;
-            uint32_t bytes_read = tcp_connection_recv(connection, &trigger, 1);
-            if (tcp_connection_is_closed(connection))
+            uint8_t header[ROS_HEADER_LEN];
+            uint8_t err = read_exact(connection, header, ROS_HEADER_LEN);
+            if (err)
             {
                 goto end;
             }
-            if (trigger == SYNC_FLAG)
-            {
-                ESP_LOGI("HOST", "Received SYNC_FLAG from client with id %d", robot_id);
-                uint8_t header[ROS_HEADER_LEN];
-                header[0] = SYNC_FLAG;
 
-                bytes_read = 0;
-                while (bytes_read < ROS_HEADER_LEN - 1)
-                {
-                    bytes_read += tcp_connection_recv(connection, header + 1 + bytes_read, ROS_HEADER_LEN - 1 - bytes_read);
-                    if (tcp_connection_is_closed(connection))
-                    {
-                        goto end;
-                    }
+            // if (header[0] != SYNC_FLAG) continue;
+
+            // err = read_exact(connection, header + 1, ROS_HEADER_LEN - 1);
+            // if (err)
+            // {
+            //     goto end;
+            // }
+
+            uint8_t start_idx = 0;
+            uint8_t trigger = 0x0;
+            for (; start_idx < ROS_HEADER_LEN; start_idx++) {
+                if (header[start_idx] == SYNC_FLAG) {
+                    trigger = SYNC_FLAG;
+                    break;
                 }
-
-                uint16_t msg_len = header[2] + ((uint16_t)header[3] << 8);
-                uint16_t topic = header[5] + ((uint16_t)header[6] << 8);
-                uint8_t cs = header[4];
-                uint8_t version = header[1];
-
-                if (cs != checksum(header + 2, 2)) {
-                    ESP_LOGE("server_task", "Error: Checksum over message length failed.");
-                    continue;
-                }
-                // else if (version != VERSION_FLAG) {
-                //     ESP_LOGE("server_task", "Error: Version flag is incompatible.");
-                //     goto delay;
-                // }
-
-                uint8_t *packet = (uint8_t *)malloc(msg_len + 4 + ROS_PKG_LEN);
-
-                packet[0] = SYNC_FLAG;
-                packet[1] = robot_id;
-                packet[2] = (msg_len + ROS_PKG_LEN) & 0xFF; // LSB
-                packet[3] = ((msg_len + ROS_PKG_LEN) >> 8) & 0xFF; // MSB
-
-                memcpy(packet + 4, header, ROS_HEADER_LEN);
-
-                bytes_read = 0;
-                while (bytes_read < msg_len + 1)
-                {
-                    bytes_read += tcp_connection_recv(connection, packet + 4 + ROS_HEADER_LEN + bytes_read, msg_len + 1 - bytes_read);
-                    if (tcp_connection_is_closed(connection))
-                    {
-                        goto end;
-                    }
-                }
-                // usb_device_send(packet, msg_len + 4 + ROS_PKG_LEN);
-                ESP_LOGI("HOST", "Received %d bytes from client with id %d", msg_len + 4 + ROS_PKG_LEN, robot_id);
-                free(packet);
             }
+            if (trigger != SYNC_FLAG) {
+                continue;
+            }
+
+            // ESP_LOGI("HOST", "start_idx %d", start_idx);
+            if (start_idx != 0) {
+                uint8_t temp[ROS_HEADER_LEN];
+                memcpy(temp, header + start_idx, ROS_HEADER_LEN - start_idx);
+                err = read_exact(connection, temp + ROS_HEADER_LEN - start_idx, start_idx);
+                if (err)
+                {
+                    goto end;
+                }
+                memcpy(header, temp, ROS_HEADER_LEN);
+            }
+            // ESP_LOGI("HOST", "header[0]: %d", header[0]);
+            // ESP_LOGI("HOST", "header[1]: %d", header[1]);
+
+            uint8_t version = header[1];
+            if (version != VERSION_FLAG) {
+                ESP_LOGE("server_task", "Error: Version flag is incompatible.");
+                continue;
+            }
+
+            uint16_t msg_len = header[2] + ((uint16_t)header[3] << 8);
+            uint16_t topic = header[5] + ((uint16_t)header[6] << 8);
+            uint8_t cs = header[4];
+            uint8_t calc_cs = checksum(header + 2, 2);
+
+            if (topic == MBOT_LIDAR_SCAN) {
+                count += 1;
+                ESP_LOGI("HOST", "Receiving lidar at %f Hz", (float)count / (((xTaskGetTickCount() - start_time) * portTICK_PERIOD_MS) / 1000.0));
+            }
+
+            // ESP_LOGI("HOST", "msg_len: %d", msg_len);
+            // ESP_LOGI("HOST", "topic: %d", topic);
+            // ESP_LOGI("HOST", "cs: %d", cs);
+            // ESP_LOGI("HOST", "calc_cs: %d", calc_cs);
+
+            if (cs != calc_cs) {
+                ESP_LOGE("server_task", "Error: Checksum over message length failed.");
+                continue;
+            }
+            // else if (version != VERSION_FLAG) {
+            //     ESP_LOGE("server_task", "Error: Version flag is incompatible.");
+            //     goto delay;
+            // }
+
+            uint8_t *packet = (uint8_t *)malloc(msg_len + 4 + ROS_PKG_LEN);
+
+            packet[0] = SYNC_FLAG;
+            packet[1] = robot_id;
+            packet[2] = (msg_len + ROS_PKG_LEN) & 0xFF; // LSB
+            packet[3] = ((msg_len + ROS_PKG_LEN) >> 8) & 0xFF; // MSB
+
+            memcpy(packet + 4, header, ROS_HEADER_LEN);
+
+            err = read_exact(connection, packet + 4 + ROS_HEADER_LEN, msg_len);
+            if (err)
+            {
+                free(packet);
+                goto end;
+            }
+
+            // usb_device_send(usb_dev, packet, msg_len + 4 + ROS_PKG_LEN);
+
+            // ESP_LOGI("HOST", "Received %d bytes from client with id %d", msg_len + 4 + ROS_PKG_LEN, robot_id);
+            free(packet);
+            // vTaskDelay(10 / portTICK_PERIOD_MS);
         }
         end:
         ESP_LOGW("HOST", "Client disconnected. Closing connection...");
@@ -171,7 +219,7 @@ void server_task(void *args)
 {
     while (true)
     {
-        tcp_connection_t *connection = tcp_server_accept(server, 0);
+        tcp_connection_t *connection = tcp_server_accept(server);
         if (connection != NULL)
         {
             if (num_connections_socket == AP_MAX_CONN) {
@@ -359,6 +407,7 @@ void heartbeat_task(void *args)
                 ESP_LOGE("HEARTBEAT_TASK", "Error: Failed to send packet to message queue.");
                 free(packet.data);
             }
+            // ESP_LOGI("HEARTBEAT_TASK", "Sent heartbeat to client with id %d", i);
         }
 
         delay:
@@ -436,7 +485,7 @@ void app_main(void)
 
     control_mode_event_group = xEventGroupCreate();
 
-    usb_dev = usb_device_create(); 
+    // usb_dev = usb_device_create(); 
 
     js = joystick_create(JOYSTICK_X_PIN, JOYSTICK_Y_PIN);
 
@@ -473,8 +522,14 @@ void app_main(void)
 
     wifi_config_t *wifi_ap_cfg = access_point_init(pair_cfg.ssid, pair_cfg.password, AP_CHANNEL, AP_IS_HIDDEN, AP_MAX_CONN);
 
-    server = tcp_server_create(AP_PORT, 0);
+    for (int i = 0; i < AP_MAX_CONN; i++)
+    {
+        connections[i] = NULL;
+    }
+
+    server = tcp_server_create(AP_PORT);
     xTaskCreate(server_task, "server_task", 4096, NULL, 4, NULL);
+    xTaskCreate(connection_task, "connection_task", 4096, NULL, 4, NULL);
 
     xTaskCreate(heartbeat_task, "heartbeat_task", 4096, NULL, 5, NULL);
 
