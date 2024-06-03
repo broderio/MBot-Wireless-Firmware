@@ -88,7 +88,7 @@ joystick_t *joystick_create(uint8_t x_pin, uint8_t y_pin) {
 
     adc_oneshot_chan_cfg_t adc_config = {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = ADC_ATTEN_DB_11,
+        .atten = ADC_ATTEN_DB_12,
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(js->x_adc_handle, js->x_channel, &adc_config));
     ESP_ERROR_CHECK(adc_oneshot_config_channel(js->y_adc_handle, js->y_channel, &adc_config));

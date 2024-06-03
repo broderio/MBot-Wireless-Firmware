@@ -30,7 +30,7 @@
 #include "pairing.h"
 #include "wifi.h"
 
-#include "client.h"
+#include "node.h"
 
 static QueueHandle_t message_queue;
 

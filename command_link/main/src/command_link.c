@@ -29,7 +29,7 @@
 #include "serializer.h"
 #include "lcm_types.h"
 
-#include "host.h"
+#include "command_link.h"
 
 #define MAX_EMPTY_READS 64
 #define BUFFER_SIZE 64

@@ -71,7 +71,6 @@ void pqueue_push(pqueue_t *pqueue, void *data) {
             break;
         }
 
-        // Manually swap elements
         void* temp = vector_at(pqueue->vector, i);
         vector_at(pqueue->vector, i) = vector_at(pqueue->vector, parent);
         vector_at(pqueue->vector, parent) = temp;
