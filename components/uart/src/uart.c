@@ -1,10 +1,31 @@
 #include <stdio.h>
-#include "string.h"
+#include <string.h>
+
+#include "esp_log.h"
 #include "driver/uart.h"
 
 #include "uart.h"
 
-void uart_init(uart_t port, int rx_pin, int tx_pin, int baud_rate, size_t buffer_size) {
+struct uart_t {
+    uart_port_t _port;
+    uint8_t _rx_pin;
+    uint8_t _tx_pin;
+    uint32_t _baud_rate;
+    uint32_t _buffer_size;
+};
+
+uart_t *uart_init(uint8_t port, uint8_t rx_pin, uint8_t tx_pin, uint32_t baud_rate, uint32_t buffer_size) {
+    uart_t *uart = (uart_t*)malloc(sizeof(uart_t));
+    if (uart == NULL) {
+        ESP_LOGE("UART", "Failed to allocate memory for UART");
+        return NULL;
+    }
+    uart->_port = port;
+    uart->_rx_pin = rx_pin;
+    uart->_tx_pin = tx_pin;
+    uart->_baud_rate = baud_rate;
+    uart->_buffer_size = buffer_size;
+
     uart_config_t uart_config = {
         .baud_rate = baud_rate,
         .data_bits = UART_DATA_8_BITS,
@@ -13,42 +34,132 @@ void uart_init(uart_t port, int rx_pin, int tx_pin, int baud_rate, size_t buffer
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    
-    ESP_ERROR_CHECK(uart_driver_install(port, buffer_size, 0, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(port, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(port, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+    esp_err_t err;
+    if (!uart_is_driver_installed(uart->_port)) {
+        err = uart_driver_install(uart->_port, buffer_size, 0, 0, NULL, 0);
+        if (err != ESP_OK) {
+            ESP_LOGE("UART", "Failed to install UART driver. Error: %s", esp_err_to_name(err));
+            free(uart);
+            return NULL;
+        }
+    }
+
+    err = uart_param_config(uart->_port, &uart_config);
+    if (err != ESP_OK) {
+        ESP_LOGE("UART", "Failed to configure UART parameters. Error: %s", esp_err_to_name(err));
+        free(uart);
+        return NULL;
+    }
+
+    err = uart_set_pin(uart->_port, uart->_tx_pin, uart->_rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    if (err != ESP_OK) {
+        ESP_LOGE("UART", "Failed to set UART pins. Error: %s", esp_err_to_name(err));
+        free(uart);
+        return NULL;
+    }
+
+    return uart;
 }
 
-void uart_deinit(uart_t port) {
-    ESP_ERROR_CHECK(uart_driver_delete(port));
+void uart_deinit(uart_t *uart) {
+    if (uart == NULL) {
+        return;
+    }
+    uart_driver_delete(uart->_port);
+    free(uart);
 }
 
-int uart_write(uart_t port, const char *data, int len) {
-    return uart_write_bytes(port, data, len);
+uint8_t uart_get_port(uart_t *uart) {
+    if (uart == NULL) {
+        return UART_NUM_MAX;
+    }
+    return uart->_port;
 }
 
-int uart_write_char(uart_t port, const char data) {
-    return uart_write_bytes(port, &data, 1);
+uint8_t uart_get_rx_pin(uart_t *uart) {
+    if (uart == NULL) {
+        return 0;
+    }
+    return uart->_rx_pin;
 }
 
-int uart_write_string(uart_t port, const char *data) {
-    return uart_write(port, data, strlen(data));
+uint8_t uart_get_tx_pin(uart_t *uart) {
+    if (uart == NULL) {
+        return 0;
+    }
+    return uart->_tx_pin;
 }
 
-int uart_read(uart_t port, char *data, int len, int timeout_ms) {
-    return uart_read_bytes(port, data, len, timeout_ms / portTICK_PERIOD_MS);
+uint32_t uart_get_baud(uart_t *uart) {
+    if (uart == NULL) {
+        return 0;
+    }
+    return uart->_baud_rate;
 }
 
-void uart_read_char(uart_t port, char *data) {
-    ESP_ERROR_CHECK(uart_read_bytes(port, data, 1, portMAX_DELAY));
+uint32_t uart_write(uart_t *uart, uint8_t *data, uint32_t len) {
+    if (uart == NULL) {
+        return 0;
+    }
+    int bytes_sent = uart_write_bytes(uart->_port, data, len);
+    if (bytes_sent < 0) {
+        ESP_LOGE("UART", "Failed to write to UART");
+        return 0;
+    }
+    return bytes_sent;
 }
 
-int uart_in_waiting(uart_t port) {
-    int len;
-    ESP_ERROR_CHECK(uart_get_buffered_data_len(port, (size_t*)&len));
+uint8_t uart_write_byte(uart_t *uart, uint8_t data) {
+    if (uart == NULL) {
+        return 0;
+    }
+    return (uint8_t)uart_write(uart, &data, 1);
+}
+
+uint32_t uart_write_string(uart_t *uart, char *data) {
+    if (uart == NULL) {
+        return 0;
+    }
+    return uart_write(uart, (uint8_t*)data, strlen(data));
+}
+
+uint32_t uart_read(uart_t *uart, uint8_t *data, uint32_t len, uint32_t timeout_ms) {
+    if (uart == NULL) {
+        return 0;
+    }
+    int bytes_read = uart_read_bytes(uart->_port, data, len, timeout_ms / portTICK_PERIOD_MS);
+    if (bytes_read < 0) {
+        ESP_LOGE("UART", "Failed to read from UART");
+        return 0;
+    }
+    return bytes_read;
+}
+
+uint8_t uart_read_byte(uart_t *uart, uint8_t *data) {
+    if (uart == NULL) {
+        return 0;
+    }
+    return (uint8_t)uart_read(uart, data, 1, portMAX_DELAY);
+}
+
+uint32_t uart_in_waiting(uart_t *uart) {
+    if (uart == NULL) {
+        return 0;
+    }
+    uint32_t len;
+    uart_get_buffered_data_len(uart->_port, (size_t*)&len);
     return len;
 }
 
-void uart_flush_buffer(uart_t port) {
-    ESP_ERROR_CHECK(uart_flush(port));
+uint8_t uart_flush_buffer(uart_t *uart) {
+    if (uart == NULL) {
+        return 0;
+    }
+    esp_err_t err = uart_flush(uart->_port);
+    if (err != ESP_OK) {
+        ESP_LOGE("UART", "Failed to flush UART buffer. Error: %s", esp_err_to_name(err));
+        return 1;
+    }
+    return 0;
 }
