@@ -1,6 +1,10 @@
 # MBot Wireless Firmware
 This is an ESP32 project designed to run on the MBot Node and Command Link boards (EasyEDA projects are included in this repository) designed by the University of Michigan.
+
+MBot Node Board
 ![MBot Node](https://github.com/broderio/MBot-Wireless-Firmware/blob/main/mbot_node.png)
+
+MBot Command Link Board
 ![MBot Command Link](https://github.com/broderio/MBot-Wireless-Firmware/blob/main/mbot_command_link.png)
 
 ## Description
