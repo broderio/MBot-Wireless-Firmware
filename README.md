@@ -2,10 +2,10 @@
 This is an ESP32 project designed to run on the MBot Node and Command Link boards (EasyEDA projects are included in this repository) designed by the University of Michigan.
 
 MBot Node Board
-![MBot Node](https://github.com/broderio/MBot-Wireless-Firmware/blob/main/mbot_node.png)
+![MBot Node](https://github.com/broderio/MBot-Wireless-Firmware/blob/main/images/mbot_node.png)
 
 MBot Command Link Board
-![MBot Command Link](https://github.com/broderio/MBot-Wireless-Firmware/blob/main/mbot_command_link.png)
+![MBot Command Link](https://github.com/broderio/MBot-Wireless-Firmware/blob/main/images/mbot_command_link.png)
 
 ## Description
 There are two firmwares in this project: command link and node. The node board is designed to interface with the University of Michigan's Robot Control Board, the RPLIDAR A1, and a OV2640 camera.
